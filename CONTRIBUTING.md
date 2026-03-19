@@ -33,6 +33,17 @@ If source changes affect runtime behavior, refresh the action bundle and include
 bun run package
 ```
 
+## Automated Releases
+
+This repository uses `release-please` with conventional commits.
+
+- Pushes to `main` trigger `.github/workflows/release-please.yml`.
+- `release-please` keeps a single release PR updated with pending release notes and version bumps.
+- Merging that release PR creates the GitHub Release, updates `CHANGELOG.md`, and creates the immutable `vX.Y.Z` tag.
+- The workflow also moves the stable `v1` tag to the newest `v1.x.x` release commit.
+
+When opening PRs, use conventional commit subjects so release-please can determine semantic version bumps correctly (for example `feat: ...`, `fix: ...`, `chore: ...`).
+
 ## Pull Request and Reviewer Expectations
 
 - Use the PR template checklist and complete the author items before requesting review.

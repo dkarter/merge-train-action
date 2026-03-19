@@ -168,12 +168,16 @@ task ci:all
 
 ## Release Strategy
 
-Use immutable semantic tags for each release (for example `v1.2.0`) and maintain a stable major tag (`v1`) that points to the latest compatible `v1.x.x` release.
+Releases are automated with `release-please` from conventional commits merged into `main`.
 
-Typical release flow:
+Release behavior:
 
-1. Update `dist/` with `bun run package` and commit source + bundle.
-2. Create and push a version tag like `v1.0.0`.
-3. Move the stable major tag to the same commit: `git tag -fa v1 -m "v1" && git push origin v1 --force-with-lease`.
+1. A push to `main` triggers `.github/workflows/release-please.yml`.
+2. `release-please` opens or updates a release PR that batches unreleased conventional commits.
+3. Merging the release PR creates a GitHub Release, a changelog update, and an immutable semantic tag (for example `v1.2.0`).
 
-Consumers should reference `@v1` for stable updates and pin full tags when strict reproducibility is required.
+Tagging strategy:
+
+- Immutable semver tags (`vX.Y.Z`) are the source of truth for each release.
+- Stable major tag `v1` is automatically force-updated to the latest `v1.x.x` release commit.
+- Consumers should use `@v1` for stable updates and pin full tags for strict reproducibility.

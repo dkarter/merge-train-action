@@ -20,7 +20,10 @@ This file is the persistent execution memory for agent-driven tasks in this repo
 
 ## Bot Identity Commit Path (Agent Branches)
 
-- On worktree/feature branches, use `scripts/agent-commit.sh` when signing prompts block automation.
+- On worktree/feature branches, prefer `scripts/safe-commit.sh` (or `bun run commit:safe`) for commits.
+- `scripts/safe-commit.sh` runs `git commit "$@"` first, then checks stderr for signing-agent failures (for example 1Password/GPG/pinentry/agent refusal patterns).
+- If signing fails and `MERGE_TRAIN_AUTO_BOT_COMMIT=1`, safe-commit automatically retries with `scripts/agent-commit.sh`.
+- If signing fails and `MERGE_TRAIN_AUTO_BOT_COMMIT` is not `1`, safe-commit prints exact rerun instructions for env-var fallback or direct bot-helper usage.
 - Helper uses bot identity defaults (`MERGE_TRAIN_BOT_NAME`, `MERGE_TRAIN_BOT_EMAIL`) and runs `git commit --no-gpg-sign`.
 - Override defaults with env vars if a repository requires specific bot attribution.
 - Do not force-push protected branches.

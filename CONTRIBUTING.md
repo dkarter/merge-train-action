@@ -43,7 +43,10 @@ bun run package
 
 ## Agent Branch Commits
 
-- When GPG/signing prompts block autonomous commits on worktree or feature branches, use `scripts/agent-commit.sh`.
+- On worktree/feature branches, use `scripts/safe-commit.sh` (or `bun run commit:safe`) for normal commits.
+- The safe wrapper runs `git commit "$@"` first and only falls back when stderr matches signing-agent failures (for example: 1Password, GPG signing failure, pinentry, or agent refusal errors).
+- Set `MERGE_TRAIN_AUTO_BOT_COMMIT=1` to auto-retry with `scripts/agent-commit.sh` when signing fails.
+- Without `MERGE_TRAIN_AUTO_BOT_COMMIT=1`, the wrapper exits with the original commit error and prints exact rerun instructions.
 - The helper sets bot identity defaults from `MERGE_TRAIN_BOT_NAME` and `MERGE_TRAIN_BOT_EMAIL` and commits with `--no-gpg-sign`.
 - You can override either identity field with environment variables when needed for repository-specific attribution.
 - Do not force-push protected branches.

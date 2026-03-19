@@ -77,11 +77,23 @@ export type MergeTrainGitHubClient = {
     ref: string;
   }) => Promise<
     Array<{
+      id: number;
       name: string;
       status: string;
       conclusion: string | null;
     }>
   >;
+  rerunCheckRuns: (params: {
+    owner: string;
+    repo: string;
+    checkRunIds: number[];
+  }) => Promise<{
+    requestedCheckRunIds: number[];
+    skippedCheckRuns: Array<{
+      checkRunId: number;
+      reason: string;
+    }>;
+  }>;
   mergePullRequest: (params: {
     owner: string;
     repo: string;
@@ -96,6 +108,7 @@ type MergeTrainParams = {
   payload: unknown;
   labelName: string;
   githubClient: MergeTrainGitHubClient;
+  rerunFailedChecks?: boolean;
   waitTimeoutSeconds?: number;
   pollIntervalSeconds?: number;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -212,32 +225,55 @@ const evaluateRequiredChecks = (params: {
   requiredContexts: string[];
   statusContexts: Record<string, 'success' | 'failure' | 'pending'>;
   checkRuns: Array<{
+    id: number;
     name: string;
     status: string;
     conclusion: string | null;
   }>;
-}): CheckOutcome => {
+}): {
+  overallOutcome: CheckOutcome;
+  failingRequiredContexts: string[];
+} => {
   if (params.requiredContexts.length === 0) {
-    return 'success';
+    return {
+      overallOutcome: 'success',
+      failingRequiredContexts: []
+    };
   }
 
-  const outcomes = params.requiredContexts.map((requiredContext) => {
+  const contextOutcomes = params.requiredContexts.map((requiredContext) => {
     const statusOutcome = params.statusContexts[requiredContext];
     if (statusOutcome) {
-      return statusOutcome;
+      return {
+        requiredContext,
+        outcome: statusOutcome
+      };
     }
 
     const matchingCheckRuns = params.checkRuns.filter(
       (checkRun) => checkRun.name === requiredContext
     );
     if (matchingCheckRuns.length === 0) {
-      return 'pending';
+      return {
+        requiredContext,
+        outcome: 'pending' as const
+      };
     }
 
-    return combineCheckOutcomes(matchingCheckRuns.map(evaluateCheckRun));
+    return {
+      requiredContext,
+      outcome: combineCheckOutcomes(matchingCheckRuns.map(evaluateCheckRun))
+    };
   });
 
-  return combineCheckOutcomes(outcomes);
+  return {
+    overallOutcome: combineCheckOutcomes(
+      contextOutcomes.map((contextOutcome) => contextOutcome.outcome)
+    ),
+    failingRequiredContexts: contextOutcomes
+      .filter((contextOutcome) => contextOutcome.outcome === 'failure')
+      .map((contextOutcome) => contextOutcome.requiredContext)
+  };
 };
 
 const isNoopPullRequestState = (
@@ -268,6 +304,7 @@ export const runMergeTrain = async ({
   payload,
   labelName,
   githubClient,
+  rerunFailedChecks = true,
   waitTimeoutSeconds = DEFAULT_WAIT_TIMEOUT_SECONDS,
   pollIntervalSeconds = DEFAULT_POLL_INTERVAL_SECONDS,
   sleep = defaultSleep
@@ -388,6 +425,7 @@ export const runMergeTrain = async ({
 
   const deadline = Date.now() + waitTimeoutSeconds * 1000;
   let latestOutcome: CheckOutcome = 'pending';
+  let rerunAttempted = false;
 
   while (Date.now() <= deadline) {
     pullRequest = await githubClient.getPullRequest({
@@ -418,15 +456,73 @@ export const runMergeTrain = async ({
       repo,
       ref: pullRequest.headSha
     });
-    latestOutcome = evaluateRequiredChecks({
+    const checkEvaluation = evaluateRequiredChecks({
       requiredContexts,
       statusContexts,
       checkRuns
     });
+    latestOutcome = checkEvaluation.overallOutcome;
 
     if (latestOutcome === 'failure') {
-      const failureMessage =
-        'Blocked: required checks are failing. RMS-27 can add rerun behavior; this action does not rerun failed checks.';
+      const failingChecks =
+        checkEvaluation.failingRequiredContexts.length > 0
+          ? checkEvaluation.failingRequiredContexts
+          : requiredContexts;
+      const failingChecksList = failingChecks.join(', ');
+
+      if (rerunFailedChecks && !rerunAttempted) {
+        rerunAttempted = true;
+
+        const rerunnableCheckRuns = checkRuns
+          .filter(
+            (checkRun) =>
+              failingChecks.includes(checkRun.name) &&
+              evaluateCheckRun(checkRun) === 'failure'
+          )
+          .map((checkRun) => checkRun.id);
+        const uniqueRerunnableCheckRuns = [
+          ...new Set(rerunnableCheckRuns.values())
+        ];
+
+        if (uniqueRerunnableCheckRuns.length === 0) {
+          const failureMessage = `Blocked: required checks failed [${failingChecksList}] and no failed check-runs were eligible for one-time rerun.`;
+          logs.push(`Transition: ${failureMessage}`);
+          return {
+            eligible: true,
+            status: 'blocked',
+            labelName,
+            message: failureMessage,
+            logs
+          };
+        }
+
+        const rerunResult = await githubClient.rerunCheckRuns({
+          owner,
+          repo,
+          checkRunIds: uniqueRerunnableCheckRuns
+        });
+
+        if (rerunResult.requestedCheckRunIds.length > 0) {
+          logs.push(
+            `Transition: required checks failed [${failingChecksList}]; requested one-time rerun for check-run IDs [${rerunResult.requestedCheckRunIds.join(', ')}].`
+          );
+        }
+        if (rerunResult.skippedCheckRuns.length > 0) {
+          logs.push(
+            `Transition: skipped rerun for check-runs [${rerunResult.skippedCheckRuns.map((skippedCheck) => `${skippedCheck.checkRunId} (${skippedCheck.reason})`).join(', ')}].`
+          );
+        }
+
+        logs.push(
+          `Transition: waiting for rerun check conclusions on '${pullRequest.headSha}' (interval ${pollIntervalSeconds}s).`
+        );
+        await sleep(pollIntervalSeconds * 1000);
+        continue;
+      }
+
+      const failureMessage = rerunAttempted
+        ? `Blocked: required checks still failing after one-time rerun [${failingChecksList}].`
+        : `Blocked: required checks failing [${failingChecksList}] (rerun disabled).`;
       logs.push(`Transition: ${failureMessage}`);
       return {
         eligible: true,

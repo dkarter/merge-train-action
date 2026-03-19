@@ -66,7 +66,7 @@ jobs:
           label-name: ship-it
           wait-timeout-seconds: '600'
           poll-interval-seconds: '15'
-          rerun-failed-checks: 'false'
+          rerun-failed-checks: 'false' # optional, defaults to true
 ```
 
 The action is eligible when:
@@ -80,12 +80,14 @@ For eligible pull requests the action orchestrates:
 2. If PR is behind base, call GitHub Update Branch API equivalent to preserve review approvals.
 3. Read required branch protection checks.
 4. Poll required status contexts and check runs until success/failure/timeout.
-5. Merge only when checks are green and PR is mergeable.
+5. If required check-runs fail and rerun is enabled, request one rerun attempt.
+6. Merge only when checks are green and PR is mergeable.
 
 Deterministic behavior:
 
 - Closed, merged, or not-mergeable PRs return clean `noop` with logs.
-- Failed checks return `blocked` (no rerun logic in this ticket; reserved for RMS-27).
+- Failed checks trigger at most one rerun attempt when `rerun-failed-checks` is enabled.
+- Action returns `blocked` with failing check names if checks are still failing.
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.

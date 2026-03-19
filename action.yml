@@ -19,9 +19,9 @@ inputs:
     required: false
     default: '15'
   rerun-failed-checks:
-    description: Placeholder toggle for rerun behavior in later tickets.
+    description: Whether to request one-time rerun for failed required check-runs.
     required: false
-    default: 'false'
+    default: 'true'
 outputs:
   label-name:
     description: Label value used by the action run.

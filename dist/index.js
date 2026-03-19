@@ -30083,10 +30083,47 @@ const createGitHubClient = (token) => {
                 per_page: 100
             });
             return response.data.check_runs.map((checkRun) => ({
+                id: checkRun.id,
                 name: checkRun.name,
                 status: checkRun.status,
                 conclusion: checkRun.conclusion
             }));
+        },
+        rerunCheckRuns: async ({ owner, repo, checkRunIds }) => {
+            const requestedCheckRunIds = [];
+            const skippedCheckRuns = [];
+            for (const checkRunId of checkRunIds) {
+                try {
+                    await octokit.rest.checks.rerequestRun({
+                        owner,
+                        repo,
+                        check_run_id: checkRunId
+                    });
+                    requestedCheckRunIds.push(checkRunId);
+                }
+                catch (error) {
+                    if (typeof error === 'object' &&
+                        error !== null &&
+                        'status' in error &&
+                        typeof error.status === 'number' &&
+                        'message' in error &&
+                        typeof error.message === 'string' &&
+                        (error.status === 403 ||
+                            error.status === 404 ||
+                            error.status === 422)) {
+                        skippedCheckRuns.push({
+                            checkRunId,
+                            reason: `${error.status}:${error.message}`
+                        });
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            return {
+                requestedCheckRunIds,
+                skippedCheckRuns
+            };
         },
         mergePullRequest: async ({ owner, repo, pullNumber, sha }) => {
             try {
@@ -30168,7 +30205,18 @@ const fs = __importStar(__nccwpck_require__(3024));
 const merge_train_1 = __nccwpck_require__(3776);
 const merge_train_2 = __nccwpck_require__(3776);
 const github_client_1 = __nccwpck_require__(7890);
-const toBoolean = (value) => value.toLowerCase() === 'true';
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'y', 'on']);
+const FALSE_VALUES = new Set(['0', 'false', 'no', 'n', 'off']);
+const toBoolean = (value, fallback) => {
+    const normalized = value.trim().toLowerCase();
+    if (TRUE_VALUES.has(normalized)) {
+        return true;
+    }
+    if (FALSE_VALUES.has(normalized)) {
+        return false;
+    }
+    return fallback;
+};
 const toPositiveInteger = (value, fallback) => {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -30187,7 +30235,7 @@ const readPayload = () => {
 const run = async () => {
     try {
         const configuredLabel = core.getInput('label-name') || merge_train_2.DEFAULT_LABEL_NAME;
-        const rerunFailedChecks = toBoolean(core.getInput('rerun-failed-checks') || 'false');
+        const rerunFailedChecks = toBoolean(core.getInput('rerun-failed-checks') || '', true);
         const waitTimeoutSeconds = toPositiveInteger(core.getInput('wait-timeout-seconds') || '', merge_train_2.DEFAULT_WAIT_TIMEOUT_SECONDS);
         const pollIntervalSeconds = toPositiveInteger(core.getInput('poll-interval-seconds') || '', merge_train_2.DEFAULT_POLL_INTERVAL_SECONDS);
         const token = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
@@ -30203,6 +30251,7 @@ const run = async () => {
             payload,
             labelName: configuredLabel,
             githubClient,
+            rerunFailedChecks,
             waitTimeoutSeconds,
             pollIntervalSeconds
         });
@@ -30210,7 +30259,7 @@ const run = async () => {
             core.info(logEntry);
         }
         core.info(result.message);
-        core.info(`Rerun toggle is ${rerunFailedChecks ? 'enabled' : 'disabled'} (stub only).`);
+        core.info(`Rerun toggle is ${rerunFailedChecks ? 'enabled' : 'disabled'}.`);
         core.setOutput('label-name', result.labelName);
         core.setOutput('status', result.status);
     }
@@ -30310,20 +30359,37 @@ const combineCheckOutcomes = (outcomes) => {
 };
 const evaluateRequiredChecks = (params) => {
     if (params.requiredContexts.length === 0) {
-        return 'success';
+        return {
+            overallOutcome: 'success',
+            failingRequiredContexts: []
+        };
     }
-    const outcomes = params.requiredContexts.map((requiredContext) => {
+    const contextOutcomes = params.requiredContexts.map((requiredContext) => {
         const statusOutcome = params.statusContexts[requiredContext];
         if (statusOutcome) {
-            return statusOutcome;
+            return {
+                requiredContext,
+                outcome: statusOutcome
+            };
         }
         const matchingCheckRuns = params.checkRuns.filter((checkRun) => checkRun.name === requiredContext);
         if (matchingCheckRuns.length === 0) {
-            return 'pending';
+            return {
+                requiredContext,
+                outcome: 'pending'
+            };
         }
-        return combineCheckOutcomes(matchingCheckRuns.map(evaluateCheckRun));
+        return {
+            requiredContext,
+            outcome: combineCheckOutcomes(matchingCheckRuns.map(evaluateCheckRun))
+        };
     });
-    return combineCheckOutcomes(outcomes);
+    return {
+        overallOutcome: combineCheckOutcomes(contextOutcomes.map((contextOutcome) => contextOutcome.outcome)),
+        failingRequiredContexts: contextOutcomes
+            .filter((contextOutcome) => contextOutcome.outcome === 'failure')
+            .map((contextOutcome) => contextOutcome.requiredContext)
+    };
 };
 const isNoopPullRequestState = (pullRequest) => {
     if (pullRequest.state !== 'open') {
@@ -30340,7 +30406,7 @@ const isNoopPullRequestState = (pullRequest) => {
 const defaultSleep = async (milliseconds) => {
     await new Promise((resolve) => setTimeout(resolve, milliseconds));
 };
-const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githubClient, waitTimeoutSeconds = exports.DEFAULT_WAIT_TIMEOUT_SECONDS, pollIntervalSeconds = exports.DEFAULT_POLL_INTERVAL_SECONDS, sleep = defaultSleep }) => {
+const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githubClient, rerunFailedChecks = true, waitTimeoutSeconds = exports.DEFAULT_WAIT_TIMEOUT_SECONDS, pollIntervalSeconds = exports.DEFAULT_POLL_INTERVAL_SECONDS, sleep = defaultSleep }) => {
     const webhookPayload = payload;
     const logs = [];
     if (eventName !== 'pull_request') {
@@ -30432,6 +30498,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
     }
     const deadline = Date.now() + waitTimeoutSeconds * 1000;
     let latestOutcome = 'pending';
+    let rerunAttempted = false;
     while (Date.now() <= deadline) {
         pullRequest = await githubClient.getPullRequest({
             owner,
@@ -30459,13 +30526,55 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             repo,
             ref: pullRequest.headSha
         });
-        latestOutcome = evaluateRequiredChecks({
+        const checkEvaluation = evaluateRequiredChecks({
             requiredContexts,
             statusContexts,
             checkRuns
         });
+        latestOutcome = checkEvaluation.overallOutcome;
         if (latestOutcome === 'failure') {
-            const failureMessage = 'Blocked: required checks are failing. RMS-27 can add rerun behavior; this action does not rerun failed checks.';
+            const failingChecks = checkEvaluation.failingRequiredContexts.length > 0
+                ? checkEvaluation.failingRequiredContexts
+                : requiredContexts;
+            const failingChecksList = failingChecks.join(', ');
+            if (rerunFailedChecks && !rerunAttempted) {
+                rerunAttempted = true;
+                const rerunnableCheckRuns = checkRuns
+                    .filter((checkRun) => failingChecks.includes(checkRun.name) &&
+                    evaluateCheckRun(checkRun) === 'failure')
+                    .map((checkRun) => checkRun.id);
+                const uniqueRerunnableCheckRuns = [
+                    ...new Set(rerunnableCheckRuns.values())
+                ];
+                if (uniqueRerunnableCheckRuns.length === 0) {
+                    const failureMessage = `Blocked: required checks failed [${failingChecksList}] and no failed check-runs were eligible for one-time rerun.`;
+                    logs.push(`Transition: ${failureMessage}`);
+                    return {
+                        eligible: true,
+                        status: 'blocked',
+                        labelName,
+                        message: failureMessage,
+                        logs
+                    };
+                }
+                const rerunResult = await githubClient.rerunCheckRuns({
+                    owner,
+                    repo,
+                    checkRunIds: uniqueRerunnableCheckRuns
+                });
+                if (rerunResult.requestedCheckRunIds.length > 0) {
+                    logs.push(`Transition: required checks failed [${failingChecksList}]; requested one-time rerun for check-run IDs [${rerunResult.requestedCheckRunIds.join(', ')}].`);
+                }
+                if (rerunResult.skippedCheckRuns.length > 0) {
+                    logs.push(`Transition: skipped rerun for check-runs [${rerunResult.skippedCheckRuns.map((skippedCheck) => `${skippedCheck.checkRunId} (${skippedCheck.reason})`).join(', ')}].`);
+                }
+                logs.push(`Transition: waiting for rerun check conclusions on '${pullRequest.headSha}' (interval ${pollIntervalSeconds}s).`);
+                await sleep(pollIntervalSeconds * 1000);
+                continue;
+            }
+            const failureMessage = rerunAttempted
+                ? `Blocked: required checks still failing after one-time rerun [${failingChecksList}].`
+                : `Blocked: required checks failing [${failingChecksList}] (rerun disabled).`;
             logs.push(`Transition: ${failureMessage}`);
             return {
                 eligible: true,

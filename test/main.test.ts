@@ -89,6 +89,7 @@ describe('run', () => {
           labels: [{ name: 'ready-to-merge' }]
         }
       },
+      rerunFailedChecks: true,
       waitTimeoutSeconds: 600
     });
     expect(mocked.info).toHaveBeenCalledWith(
@@ -97,9 +98,7 @@ describe('run', () => {
     expect(mocked.info).toHaveBeenCalledWith(
       'Merged: pull request #9 merged after required checks succeeded.'
     );
-    expect(mocked.info).toHaveBeenCalledWith(
-      'Rerun toggle is disabled (stub only).'
-    );
+    expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is enabled.');
     expect(mocked.setOutput).toHaveBeenCalledWith(
       'label-name',
       'ready-to-merge'
@@ -142,11 +141,10 @@ describe('run', () => {
           labels: [{ name: 'ready-to-merge' }]
         }
       },
+      rerunFailedChecks: true,
       waitTimeoutSeconds: 600
     });
-    expect(mocked.info).toHaveBeenCalledWith(
-      'Rerun toggle is enabled (stub only).'
-    );
+    expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is enabled.');
     expect(mocked.setOutput).toHaveBeenCalledWith('label-name', 'queue-me');
     expect(mocked.setOutput).toHaveBeenCalledWith('status', 'noop');
     expect(mocked.setFailed).not.toHaveBeenCalled();
@@ -187,5 +185,29 @@ describe('run', () => {
       'Missing GitHub token. Set input github-token or GITHUB_TOKEN.'
     );
     expect(mocked.runMergeTrain).not.toHaveBeenCalled();
+  });
+
+  it('parses rerun toggle robustly and disables rerun for false-like values', async () => {
+    mocked.getInput.mockImplementation((name: string) => {
+      if (name === 'rerun-failed-checks') {
+        return 'No';
+      }
+
+      return '';
+    });
+    mocked.runMergeTrain.mockResolvedValue({
+      eligible: true,
+      status: 'noop',
+      labelName: 'ready-to-merge',
+      message: "No-op: pull request #9 is 'closed', not open.",
+      logs: []
+    });
+
+    await run();
+
+    expect(mocked.runMergeTrain).toHaveBeenCalledWith(
+      expect.objectContaining({ rerunFailedChecks: false })
+    );
+    expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is disabled.');
   });
 });

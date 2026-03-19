@@ -39,6 +39,7 @@ const createClient = (): MergeTrainGitHubClient => ({
   getRequiredCheckContexts: vi.fn(),
   getCombinedStatusContexts: vi.fn(),
   getCheckRuns: vi.fn(),
+  rerunCheckRuns: vi.fn(),
   mergePullRequest: vi.fn()
 });
 
@@ -75,11 +76,16 @@ describe('runMergeTrain', () => {
     });
     vi.mocked(githubClient.getCheckRuns).mockResolvedValue([
       {
+        id: 17,
         name: 'ci/lint',
         status: 'completed',
         conclusion: 'success'
       }
     ]);
+    vi.mocked(githubClient.rerunCheckRuns).mockResolvedValue({
+      requestedCheckRunIds: [],
+      skippedCheckRuns: []
+    });
     vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
       merged: true,
       message: 'Pull Request successfully merged'
@@ -143,6 +149,10 @@ describe('runMergeTrain', () => {
       'ci/test': 'success'
     });
     vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.rerunCheckRuns).mockResolvedValue({
+      requestedCheckRunIds: [],
+      skippedCheckRuns: []
+    });
 
     const result = await runMergeTrain({
       eventName: 'pull_request',
@@ -178,6 +188,10 @@ describe('runMergeTrain', () => {
       'ci/test': 'failure'
     });
     vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.rerunCheckRuns).mockResolvedValue({
+      requestedCheckRunIds: [],
+      skippedCheckRuns: []
+    });
 
     const result = await runMergeTrain({
       eventName: 'pull_request',
@@ -185,13 +199,16 @@ describe('runMergeTrain', () => {
       labelName: 'ready-to-merge',
       payload: basePayload,
       githubClient,
+      rerunFailedChecks: false,
       waitTimeoutSeconds: 1,
       pollIntervalSeconds: 1,
       sleep: vi.fn()
     });
 
     expect(result.status).toBe('blocked');
-    expect(result.message).toContain('required checks are failing');
+    expect(result.message).toBe(
+      'Blocked: required checks failing [ci/test] (rerun disabled).'
+    );
     expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
   });
 
@@ -211,6 +228,10 @@ describe('runMergeTrain', () => {
       'ci/test': 'success'
     });
     vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.rerunCheckRuns).mockResolvedValue({
+      requestedCheckRunIds: [],
+      skippedCheckRuns: []
+    });
     vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
       merged: false,
       message: '405:Base branch policy blocks merge'
@@ -229,6 +250,168 @@ describe('runMergeTrain', () => {
 
     expect(result.status).toBe('blocked');
     expect(result.message).toContain('GitHub rejected merge attempt');
+  });
+
+  it('reruns failed check-runs once and merges after rerun succeeds', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts)
+      .mockResolvedValueOnce({
+        'ci/test': 'failure'
+      })
+      .mockResolvedValueOnce({
+        'ci/test': 'success'
+      });
+    vi.mocked(githubClient.getCheckRuns)
+      .mockResolvedValueOnce([
+        {
+          id: 101,
+          name: 'ci/test',
+          status: 'completed',
+          conclusion: 'failure'
+        }
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 101,
+          name: 'ci/test',
+          status: 'completed',
+          conclusion: 'success'
+        }
+      ]);
+    vi.mocked(githubClient.rerunCheckRuns).mockResolvedValue({
+      requestedCheckRunIds: [101],
+      skippedCheckRuns: []
+    });
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      rerunFailedChecks: true,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(githubClient.rerunCheckRuns).toHaveBeenCalledTimes(1);
+    expect(githubClient.rerunCheckRuns).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      checkRunIds: [101]
+    });
+    expect(result.status).toBe('merged');
+  });
+
+  it('blocks with diagnostics when checks still fail after one-time rerun', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts)
+      .mockResolvedValueOnce({
+        'ci/test': 'failure'
+      })
+      .mockResolvedValueOnce({
+        'ci/test': 'failure'
+      });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([
+      {
+        id: 101,
+        name: 'ci/test',
+        status: 'completed',
+        conclusion: 'failure'
+      }
+    ]);
+    vi.mocked(githubClient.rerunCheckRuns).mockResolvedValue({
+      requestedCheckRunIds: [101],
+      skippedCheckRuns: []
+    });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      rerunFailedChecks: true,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(githubClient.rerunCheckRuns).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('blocked');
+    expect(result.message).toBe(
+      'Blocked: required checks still failing after one-time rerun [ci/test].'
+    );
+  });
+
+  it('blocks without rerun when rerun toggle is disabled', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'failure'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([
+      {
+        id: 101,
+        name: 'ci/test',
+        status: 'completed',
+        conclusion: 'failure'
+      }
+    ]);
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      rerunFailedChecks: false,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(githubClient.rerunCheckRuns).not.toHaveBeenCalled();
+    expect(result.status).toBe('blocked');
+    expect(result.message).toBe(
+      'Blocked: required checks failing [ci/test] (rerun disabled).'
+    );
   });
 
   it('is a no-op when pull request does not have configured label', async () => {

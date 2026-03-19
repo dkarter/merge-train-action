@@ -160,10 +160,53 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       });
 
       return response.data.check_runs.map((checkRun) => ({
+        id: checkRun.id,
         name: checkRun.name,
         status: checkRun.status,
         conclusion: checkRun.conclusion
       }));
+    },
+
+    rerunCheckRuns: async ({ owner, repo, checkRunIds }) => {
+      const requestedCheckRunIds: number[] = [];
+      const skippedCheckRuns: Array<{ checkRunId: number; reason: string }> =
+        [];
+
+      for (const checkRunId of checkRunIds) {
+        try {
+          await octokit.rest.checks.rerequestRun({
+            owner,
+            repo,
+            check_run_id: checkRunId
+          });
+          requestedCheckRunIds.push(checkRunId);
+        } catch (error) {
+          if (
+            typeof error === 'object' &&
+            error !== null &&
+            'status' in error &&
+            typeof error.status === 'number' &&
+            'message' in error &&
+            typeof error.message === 'string' &&
+            (error.status === 403 ||
+              error.status === 404 ||
+              error.status === 422)
+          ) {
+            skippedCheckRuns.push({
+              checkRunId,
+              reason: `${error.status}:${error.message}`
+            });
+            continue;
+          }
+
+          throw error;
+        }
+      }
+
+      return {
+        requestedCheckRunIds,
+        skippedCheckRuns
+      };
     },
 
     mergePullRequest: async ({

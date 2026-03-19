@@ -8,7 +8,21 @@ import {
 } from './merge-train';
 import { createGitHubClient } from './github-client';
 
-const toBoolean = (value: string): boolean => value.toLowerCase() === 'true';
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'y', 'on']);
+const FALSE_VALUES = new Set(['0', 'false', 'no', 'n', 'off']);
+
+const toBoolean = (value: string, fallback: boolean): boolean => {
+  const normalized = value.trim().toLowerCase();
+  if (TRUE_VALUES.has(normalized)) {
+    return true;
+  }
+
+  if (FALSE_VALUES.has(normalized)) {
+    return false;
+  }
+
+  return fallback;
+};
 
 const toPositiveInteger = (value: string, fallback: number): number => {
   const parsed = Number.parseInt(value, 10);
@@ -33,7 +47,8 @@ export const run = async (): Promise<void> => {
   try {
     const configuredLabel = core.getInput('label-name') || DEFAULT_LABEL_NAME;
     const rerunFailedChecks = toBoolean(
-      core.getInput('rerun-failed-checks') || 'false'
+      core.getInput('rerun-failed-checks') || '',
+      true
     );
     const waitTimeoutSeconds = toPositiveInteger(
       core.getInput('wait-timeout-seconds') || '',
@@ -61,6 +76,7 @@ export const run = async (): Promise<void> => {
       payload,
       labelName: configuredLabel,
       githubClient,
+      rerunFailedChecks,
       waitTimeoutSeconds,
       pollIntervalSeconds
     });
@@ -69,9 +85,7 @@ export const run = async (): Promise<void> => {
       core.info(logEntry);
     }
     core.info(result.message);
-    core.info(
-      `Rerun toggle is ${rerunFailedChecks ? 'enabled' : 'disabled'} (stub only).`
-    );
+    core.info(`Rerun toggle is ${rerunFailedChecks ? 'enabled' : 'disabled'}.`);
 
     core.setOutput('label-name', result.labelName);
     core.setOutput('status', result.status);

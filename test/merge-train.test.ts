@@ -266,6 +266,7 @@ describe('runMergeTrain', () => {
     vi.mocked(githubClient.getPullRequest)
       .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
       .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
       .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
     vi.mocked(githubClient.updateBranch).mockResolvedValue({
       attempted: false,
@@ -421,6 +422,8 @@ describe('runMergeTrain', () => {
     expect(result.message).toBe(
       'Blocked: required checks failing [ci/test] (rerun disabled).'
     );
+  });
+
   it('returns no-op when label is removed while waiting', async () => {
     const githubClient = createClient();
     vi.mocked(githubClient.getPullRequest)

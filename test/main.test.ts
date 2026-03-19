@@ -1,38 +1,69 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocked = vi.hoisted(() => ({
+vi.mock('@actions/core', () => ({
   info: vi.fn(),
   getInput: vi.fn(),
   setFailed: vi.fn(),
-  setOutput: vi.fn(),
-  createGitHubClient: vi.fn(),
-  runMergeTrain: vi.fn(),
-  readFileSync: vi.fn()
-}));
-
-vi.mock('@actions/core', () => ({
-  info: mocked.info,
-  getInput: mocked.getInput,
-  setFailed: mocked.setFailed,
-  setOutput: mocked.setOutput
+  setOutput: vi.fn()
 }));
 
 vi.mock('node:fs', () => ({
-  readFileSync: mocked.readFileSync
+  readFileSync: vi.fn()
 }));
 
 vi.mock('../src/merge-train', () => ({
   DEFAULT_POLL_INTERVAL_SECONDS: 15,
   DEFAULT_LABEL_NAME: 'ready-to-merge',
   DEFAULT_WAIT_TIMEOUT_SECONDS: 600,
-  runMergeTrain: mocked.runMergeTrain
+  runMergeTrain: vi.fn()
 }));
 
 vi.mock('../src/github-client', () => ({
-  createGitHubClient: mocked.createGitHubClient
+  createGitHubClient: vi.fn()
 }));
 
+import * as core from '@actions/core';
+import * as fs from 'node:fs';
+import { createGitHubClient } from '../src/github-client';
+import { runMergeTrain } from '../src/merge-train';
 import { run } from '../src/main';
+
+const mocked = {
+  info: vi.mocked(core.info),
+  getInput: vi.mocked(core.getInput),
+  setFailed: vi.mocked(core.setFailed),
+  setOutput: vi.mocked(core.setOutput),
+  createGitHubClient: vi.mocked(createGitHubClient),
+  runMergeTrain: vi.mocked(runMergeTrain),
+  readFileSync: vi.mocked(fs.readFileSync)
+};
+
+const eventPayload = {
+  action: 'opened',
+  pull_request: {
+    labels: [{ name: 'ready-to-merge' }]
+  }
+};
+
+const mockInputs = (overrides: Record<string, string>, fallback = ''): void => {
+  mocked.getInput.mockImplementation(
+    (name: string) => overrides[name] ?? fallback
+  );
+};
+
+const githubClient = {} as ReturnType<typeof createGitHubClient>;
+
+const buildRunMergeTrainArgs = (overrides: Record<string, unknown> = {}) => ({
+  eventAction: 'opened',
+  eventName: 'pull_request',
+  githubClient,
+  labelName: 'ready-to-merge',
+  pollIntervalSeconds: 15,
+  payload: eventPayload,
+  rerunFailedChecks: true,
+  waitTimeoutSeconds: 600,
+  ...overrides
+});
 
 describe('run', () => {
   beforeEach(() => {
@@ -47,15 +78,8 @@ describe('run', () => {
     vi.stubEnv('GITHUB_EVENT_NAME', 'pull_request');
     vi.stubEnv('GITHUB_EVENT_PATH', '/tmp/event.json');
     vi.stubEnv('GITHUB_TOKEN', 'gh-token');
-    mocked.createGitHubClient.mockReturnValue({});
-    mocked.readFileSync.mockReturnValue(
-      JSON.stringify({
-        action: 'opened',
-        pull_request: {
-          labels: [{ name: 'ready-to-merge' }]
-        }
-      })
-    );
+    mocked.createGitHubClient.mockReturnValue(githubClient);
+    mocked.readFileSync.mockReturnValue(JSON.stringify(eventPayload));
   });
 
   it('uses default config and emits outputs when eligible', async () => {
@@ -77,21 +101,7 @@ describe('run', () => {
     expect(mocked.getInput).toHaveBeenNthCalledWith(4, 'poll-interval-seconds');
     expect(mocked.getInput).toHaveBeenNthCalledWith(5, 'github-token');
     expect(mocked.createGitHubClient).toHaveBeenCalledWith('gh-token');
-    expect(mocked.runMergeTrain).toHaveBeenCalledWith({
-      eventAction: 'opened',
-      eventName: 'pull_request',
-      githubClient: {},
-      labelName: 'ready-to-merge',
-      pollIntervalSeconds: 15,
-      payload: {
-        action: 'opened',
-        pull_request: {
-          labels: [{ name: 'ready-to-merge' }]
-        }
-      },
-      rerunFailedChecks: true,
-      waitTimeoutSeconds: 600
-    });
+    expect(mocked.runMergeTrain).toHaveBeenCalledWith(buildRunMergeTrainArgs());
     expect(mocked.info).toHaveBeenCalledWith(
       'Transition: required checks succeeded.'
     );
@@ -108,16 +118,9 @@ describe('run', () => {
   });
 
   it('respects custom label input and returns noop status', async () => {
-    mocked.getInput.mockImplementation((name: string) => {
-      if (name === 'label-name') {
-        return 'queue-me';
-      }
-
-      if (name === 'rerun-failed-checks') {
-        return 'true';
-      }
-
-      return '';
+    mockInputs({
+      'label-name': 'queue-me',
+      'rerun-failed-checks': 'true'
     });
     mocked.runMergeTrain.mockResolvedValue({
       eligible: true,
@@ -129,21 +132,9 @@ describe('run', () => {
 
     await run();
 
-    expect(mocked.runMergeTrain).toHaveBeenCalledWith({
-      eventAction: 'opened',
-      eventName: 'pull_request',
-      githubClient: {},
-      labelName: 'queue-me',
-      pollIntervalSeconds: 15,
-      payload: {
-        action: 'opened',
-        pull_request: {
-          labels: [{ name: 'ready-to-merge' }]
-        }
-      },
-      rerunFailedChecks: true,
-      waitTimeoutSeconds: 600
-    });
+    expect(mocked.runMergeTrain).toHaveBeenCalledWith(
+      buildRunMergeTrainArgs({ labelName: 'queue-me' })
+    );
     expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is enabled.');
     expect(mocked.setOutput).toHaveBeenCalledWith('label-name', 'queue-me');
     expect(mocked.setOutput).toHaveBeenCalledWith('status', 'noop');
@@ -151,13 +142,7 @@ describe('run', () => {
   });
 
   it('sets failed when merge-train execution throws', async () => {
-    mocked.getInput.mockImplementation((name: string) => {
-      if (name === 'github-token') {
-        return '';
-      }
-
-      return 'ready-to-merge';
-    });
+    mockInputs({ 'github-token': '' }, 'ready-to-merge');
     mocked.runMergeTrain.mockRejectedValue(new Error('boom'));
 
     await run();
@@ -166,17 +151,7 @@ describe('run', () => {
   });
 
   it('sets failed when no token is provided', async () => {
-    mocked.getInput.mockImplementation((name: string) => {
-      if (name === 'label-name') {
-        return 'ready-to-merge';
-      }
-
-      if (name === 'github-token') {
-        return '';
-      }
-
-      return '';
-    });
+    mockInputs({ 'label-name': 'ready-to-merge', 'github-token': '' });
     vi.stubEnv('GITHUB_TOKEN', '');
 
     await run();
@@ -188,13 +163,7 @@ describe('run', () => {
   });
 
   it('parses rerun toggle robustly and disables rerun for false-like values', async () => {
-    mocked.getInput.mockImplementation((name: string) => {
-      if (name === 'rerun-failed-checks') {
-        return 'No';
-      }
-
-      return '';
-    });
+    mockInputs({ 'rerun-failed-checks': 'No' });
     mocked.runMergeTrain.mockResolvedValue({
       eligible: true,
       status: 'noop',

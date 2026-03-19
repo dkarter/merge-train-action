@@ -2,10 +2,22 @@ name: Merge Train Action
 description: Safely prepares labeled pull requests for merge-train workflows.
 author: merge-train-action maintainers
 inputs:
+  github-token:
+    description: Token used for pull request update/check/merge API calls.
+    required: false
+    default: ''
   label-name:
     description: Label that marks pull requests as merge-train candidates.
     required: false
     default: ready-to-merge
+  wait-timeout-seconds:
+    description: Maximum seconds to wait for required checks before blocking.
+    required: false
+    default: '600'
+  poll-interval-seconds:
+    description: Poll interval in seconds for mergeability and check state.
+    required: false
+    default: '15'
   rerun-failed-checks:
     description: Placeholder toggle for rerun behavior in later tickets.
     required: false
@@ -14,7 +26,7 @@ outputs:
   label-name:
     description: Label value used by the action run.
   status:
-    description: Execution status for downstream workflow steps.
+    description: Final state (`merged`, `blocked`, or `noop`) for downstream steps.
 runs:
   using: node20
   main: dist/index.js

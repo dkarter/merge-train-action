@@ -10,8 +10,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "package": "npm run build && ncc build src/main.ts -o dist --source-map --license licenses.txt",
-    "ci": "npm run lint && npm run format:check && npm run test && npm run package"
+    "package": "bun run build && ncc build src/main.ts -o dist --source-map --license licenses.txt",
+    "ci": "bun run lint && bun run format:check && bun run test && bun run package"
   },
   "engines": {
     "node": ">=20"
@@ -23,7 +23,8 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@actions/core": "^1.11.1"
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.30",

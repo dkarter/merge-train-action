@@ -1,85 +1,288 @@
-import { describe, expect, it } from 'vitest';
-import { DEFAULT_LABEL_NAME, runMergeTrain } from '../src/merge-train';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_LABEL_NAME,
+  runMergeTrain,
+  type MergeTrainGitHubClient,
+  type PullRequestState
+} from '../src/merge-train';
+
+const buildPullRequestState = (
+  overrides: Partial<PullRequestState>
+): PullRequestState => ({
+  number: 9,
+  state: 'open',
+  merged: false,
+  mergeable: true,
+  mergeableState: 'clean',
+  headSha: 'sha-1',
+  baseRef: 'main',
+  ...overrides
+});
+
+const basePayload = {
+  action: 'synchronize',
+  repository: {
+    name: 'merge-train-action',
+    owner: {
+      login: 'acme'
+    }
+  },
+  pull_request: {
+    number: 9,
+    labels: [{ name: 'ready-to-merge' }]
+  }
+};
+
+const createClient = (): MergeTrainGitHubClient => ({
+  getPullRequest: vi.fn(),
+  updateBranch: vi.fn(),
+  getRequiredCheckContexts: vi.fn(),
+  getCombinedStatusContexts: vi.fn(),
+  getCheckRuns: vi.fn(),
+  mergePullRequest: vi.fn()
+});
 
 describe('runMergeTrain', () => {
   it('uses the default configured label name constant', () => {
     expect(DEFAULT_LABEL_NAME).toBe('ready-to-merge');
   });
 
-  it('is eligible when pull request already has configured label', async () => {
+  it('attempts safe update when pull request is behind and then merges', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'behind',
+          headSha: 'sha-behind'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'clean',
+          headSha: 'sha-updated'
+        })
+      );
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: true,
+      updated: true
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test',
+      'ci/lint'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([
+      {
+        name: 'ci/lint',
+        status: 'completed',
+        conclusion: 'success'
+      }
+    ]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+
     const result = await runMergeTrain({
       eventName: 'pull_request',
       eventAction: 'synchronize',
       labelName: 'ready-to-merge',
-      payload: {
-        pull_request: {
-          labels: [{ name: 'ready-to-merge' }, { name: 'bug' }]
-        }
-      }
+      payload: basePayload,
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
     });
 
-    expect(result).toEqual({
-      eligible: true,
-      labelName: 'ready-to-merge',
-      message:
-        "Merge train trigger eligible: pull request already has label 'ready-to-merge'."
+    expect(githubClient.updateBranch).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      pullNumber: 9,
+      expectedHeadSha: 'sha-behind'
     });
+    expect(githubClient.mergePullRequest).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      pullNumber: 9,
+      sha: 'sha-updated'
+    });
+    expect(result.eligible).toBe(true);
+    expect(result.status).toBe('merged');
+    expect(result.message).toBe(
+      'Merged: pull request #9 merged after required checks succeeded.'
+    );
   });
 
-  it('is eligible when labeled action adds the configured label', async () => {
+  it('returns no-op when update branch is unavailable and pull request stays unmergeable', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'behind',
+          headSha: 'sha-behind'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeable: false,
+          mergeableState: 'behind',
+          headSha: 'sha-behind'
+        })
+      );
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false,
+      reason: '404:Not Found'
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+
     const result = await runMergeTrain({
       eventName: 'pull_request',
-      eventAction: 'labeled',
+      eventAction: 'synchronize',
       labelName: 'ready-to-merge',
-      payload: {
-        label: { name: 'ready-to-merge' },
-        pull_request: {
-          labels: [{ name: 'bug' }]
-        }
-      }
+      payload: basePayload,
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
     });
 
-    expect(result).toEqual({
-      eligible: true,
-      labelName: 'ready-to-merge',
-      message:
-        "Merge train trigger eligible: added label 'ready-to-merge' matches configuration."
+    expect(result.status).toBe('noop');
+    expect(result.message).toBe(
+      "No-op: pull request #9 is not mergeable (mergeable_state='behind')."
+    );
+    expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('blocks merge when required checks fail', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
     });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'failure'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.message).toContain('required checks are failing');
+    expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('blocks merge when merge API rejects merge attempt', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: false,
+      message: '405:Base branch policy blocks merge'
+    });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.message).toContain('GitHub rejected merge attempt');
   });
 
   it('is a no-op when pull request does not have configured label', async () => {
+    const githubClient = createClient();
+
     const result = await runMergeTrain({
       eventName: 'pull_request',
       eventAction: 'opened',
       labelName: 'ready-to-merge',
       payload: {
+        ...basePayload,
         pull_request: {
+          number: 9,
           labels: [{ name: 'bug' }]
         }
-      }
+      },
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
     });
 
     expect(result).toEqual({
       eligible: false,
+      status: 'noop',
       labelName: 'ready-to-merge',
       message:
-        "No-op: pull request is not labeled 'ready-to-merge' for event action 'opened'."
+        "No-op: pull request is not labeled 'ready-to-merge' for event action 'opened'.",
+      logs: []
     });
+    expect(githubClient.getPullRequest).not.toHaveBeenCalled();
   });
 
   it('is a no-op for non pull_request events', async () => {
+    const githubClient = createClient();
+
     const result = await runMergeTrain({
       eventName: 'push',
       eventAction: undefined,
       labelName: 'ready-to-merge',
-      payload: {}
+      payload: {},
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
     });
 
     expect(result).toEqual({
       eligible: false,
+      status: 'noop',
       labelName: 'ready-to-merge',
       message:
-        "No-op: event 'push' is not supported. Waiting for pull_request events."
+        "No-op: event 'push' is not supported. Waiting for pull_request events.",
+      logs: []
     });
   });
 });

@@ -1,0 +1,206 @@
+import * as github from '@actions/github';
+import type {
+  MergeResult,
+  MergeTrainGitHubClient,
+  PullRequestState,
+  UpdateBranchResult
+} from './merge-train';
+
+const normalizeStatusState = (
+  state: string
+): 'success' | 'failure' | 'pending' => {
+  if (state === 'success') {
+    return 'success';
+  }
+
+  if (state === 'failure' || state === 'error') {
+    return 'failure';
+  }
+
+  return 'pending';
+};
+
+export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
+  const octokit = github.getOctokit(token);
+
+  return {
+    getPullRequest: async ({
+      owner,
+      repo,
+      pullNumber
+    }): Promise<PullRequestState> => {
+      const response = await octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: pullNumber
+      });
+      return {
+        number: response.data.number,
+        state: response.data.state,
+        merged: Boolean(response.data.merged),
+        mergeable:
+          typeof response.data.mergeable === 'boolean'
+            ? response.data.mergeable
+            : null,
+        mergeableState: response.data.mergeable_state ?? null,
+        headSha: response.data.head.sha,
+        baseRef: response.data.base.ref
+      };
+    },
+
+    updateBranch: async ({
+      owner,
+      repo,
+      pullNumber,
+      expectedHeadSha
+    }): Promise<UpdateBranchResult> => {
+      try {
+        const response = await octokit.rest.pulls.updateBranch({
+          owner,
+          repo,
+          pull_number: pullNumber,
+          expected_head_sha: expectedHeadSha
+        });
+
+        return {
+          attempted: true,
+          updated: response.status === 202
+        };
+      } catch (error) {
+        if (typeof error !== 'object' || error === null) {
+          throw error;
+        }
+
+        const statusCode =
+          'status' in error && typeof error.status === 'number'
+            ? error.status
+            : undefined;
+        const message =
+          'message' in error && typeof error.message === 'string'
+            ? error.message
+            : 'unknown';
+
+        if (statusCode === 422 || statusCode === 403 || statusCode === 409) {
+          return {
+            attempted: true,
+            updated: false,
+            reason: `${statusCode}:${message}`
+          };
+        }
+
+        if (statusCode === 404) {
+          return {
+            attempted: false,
+            updated: false,
+            reason: `${statusCode}:${message}`
+          };
+        }
+
+        throw error;
+      }
+    },
+
+    getRequiredCheckContexts: async ({ owner, repo, branch }) => {
+      try {
+        const response = await octokit.rest.repos.getBranchProtection({
+          owner,
+          repo,
+          branch
+        });
+
+        const contexts = new Set<string>();
+        for (const context of response.data.required_status_checks?.contexts ??
+          []) {
+          contexts.add(context);
+        }
+
+        for (const check of response.data.required_status_checks?.checks ??
+          []) {
+          if (typeof check.context === 'string' && check.context.length > 0) {
+            contexts.add(check.context);
+          }
+        }
+
+        return [...contexts.values()];
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          error.status === 404
+        ) {
+          return [];
+        }
+
+        throw error;
+      }
+    },
+
+    getCombinedStatusContexts: async ({ owner, repo, ref }) => {
+      const response = await octokit.rest.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref
+      });
+
+      const statuses: Record<string, 'success' | 'failure' | 'pending'> = {};
+      for (const statusEntry of response.data.statuses) {
+        statuses[statusEntry.context] = normalizeStatusState(statusEntry.state);
+      }
+
+      return statuses;
+    },
+
+    getCheckRuns: async ({ owner, repo, ref }) => {
+      const response = await octokit.rest.checks.listForRef({
+        owner,
+        repo,
+        ref,
+        per_page: 100
+      });
+
+      return response.data.check_runs.map((checkRun) => ({
+        name: checkRun.name,
+        status: checkRun.status,
+        conclusion: checkRun.conclusion
+      }));
+    },
+
+    mergePullRequest: async ({
+      owner,
+      repo,
+      pullNumber,
+      sha
+    }): Promise<MergeResult> => {
+      try {
+        const response = await octokit.rest.pulls.merge({
+          owner,
+          repo,
+          pull_number: pullNumber,
+          sha
+        });
+
+        return {
+          merged: response.data.merged,
+          message: response.data.message
+        };
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          typeof error.status === 'number' &&
+          'message' in error &&
+          typeof error.message === 'string'
+        ) {
+          return {
+            merged: false,
+            message: `${error.status}:${error.message}`
+          };
+        }
+
+        throw error;
+      }
+    }
+  };
+};

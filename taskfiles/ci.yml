@@ -4,19 +4,19 @@ tasks:
   lint:
     desc: Run ESLint checks
     cmds:
-      - npm run lint
+      - bun run lint
 
   format:check:
     desc: Run Prettier checks
     cmds:
-      - npm run format:check
+      - bun run format:check
 
   test:
     desc: Run unit tests
     cmds:
-      - npm test
+      - bun test
 
   package:
     desc: Build action distribution bundle
     cmds:
-      - npm run package
+      - bun run package

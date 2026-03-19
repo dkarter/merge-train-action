@@ -9,6 +9,8 @@ This repository is bootstrapped with a production-ready TypeScript-based JavaScr
 - Node 20 action runtime (`action.yml`)
 - TypeScript source in `src/` bundled to committed `dist/` output
 - Lint, format, and unit tests wired for local development and CI
+- Safe PR branch update via GitHub `update-branch` semantics (no rebase/force-push)
+- Merge orchestration that waits for required checks/check runs before merging
 
 ## Usage
 
@@ -25,12 +27,16 @@ jobs:
   merge-train:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
     steps:
       - uses: actions/checkout@v4
       - name: Run merge train action
         uses: your-org/merge-train-action@v1
         with:
+          github-token: ${{ github.token }}
           label-name: ready-to-merge
 ```
 
@@ -47,13 +53,19 @@ jobs:
   merge-train:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
+      checks: read
+      statuses: read
     steps:
       - uses: actions/checkout@v4
       - name: Run merge train action
         uses: your-org/merge-train-action@v1
         with:
+          github-token: ${{ github.token }}
           label-name: ship-it
+          wait-timeout-seconds: '600'
+          poll-interval-seconds: '15'
           rerun-failed-checks: 'false'
 ```
 
@@ -62,16 +74,30 @@ The action is eligible when:
 - the pull request payload already contains `label-name`
 - a `pull_request` `labeled` event adds `label-name`
 
-Otherwise the action exits as a no-op and sets `status` to `noop`.
+For eligible pull requests the action orchestrates:
+
+1. Fetch current PR state.
+2. If PR is behind base, call GitHub Update Branch API equivalent to preserve review approvals.
+3. Read required branch protection checks.
+4. Poll required status contexts and check runs until success/failure/timeout.
+5. Merge only when checks are green and PR is mergeable.
+
+Deterministic behavior:
+
+- Closed, merged, or not-mergeable PRs return clean `noop` with logs.
+- Failed checks return `blocked` (no rerun logic in this ticket; reserved for RMS-27).
+- Successful merge returns `merged`.
+
+Output `status` values: `merged`, `blocked`, `noop`.
 
 ## Local Development
 
 ```bash
-npm ci
-npm run lint
-npm run format:check
-npm test
-npm run package
+bun install
+bun run lint
+bun run format:check
+bun test
+bun run package
 ```
 
 Optional task aliases are also available:
@@ -89,7 +115,7 @@ Use immutable semantic tags for each release (for example `v1.2.0`) and maintain
 
 Typical release flow:
 
-1. Update `dist/` with `npm run package` and commit source + bundle.
+1. Update `dist/` with `bun run package` and commit source + bundle.
 2. Create and push a version tag like `v1.0.0`.
 3. Move the stable major tag to the same commit: `git tag -fa v1 -m "v1" && git push origin v1 --force-with-lease`.
 

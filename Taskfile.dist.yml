@@ -5,11 +5,11 @@ includes:
 
 tasks:
   setup:
-    desc: Install npm dependencies
+    desc: Install Bun dependencies
     cmds:
-      - npm ci
+      - bun install
 
   package:
     desc: Bundle TypeScript action into dist/
     cmds:
-      - npm run package
+      - bun run package

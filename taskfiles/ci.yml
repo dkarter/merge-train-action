@@ -20,3 +20,29 @@ tasks:
     desc: Build action distribution bundle
     cmds:
       - bun run package
+
+  dist:check:
+    desc: Verify committed dist output is up to date
+    cmds:
+      - bun run dist:check
+
+  audit:
+    desc: Run dependency vulnerability audit
+    cmds:
+      - bun run audit
+
+  secrets:scan:
+    desc: Scan repository history for leaked secrets
+    cmds:
+      - bun run secrets:scan
+
+  security:
+    desc: Run all security checks
+    cmds:
+      - bun run audit
+      - bun run secrets:scan
+
+  all:
+    desc: Run full CI quality and security checks
+    cmds:
+      - bun run ci

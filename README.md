@@ -115,6 +115,30 @@ Safety guardrails in this action:
 - Treats already-merged/closed or otherwise non-actionable PRs as idempotent no-op outcomes.
 - Failed checks can rerun once when enabled; no repeated rerun loops.
 
+## Branch Protection (Required)
+
+To enforce merge quality gates, configure branch protection for your default branch with these settings:
+
+- Require a pull request before merging.
+- Require approvals (at least 1) and dismiss stale approvals when new commits are pushed.
+- Require status checks to pass before merging.
+- Require branches to be up to date before merging.
+
+Required CI checks from this repository's `CI` workflow:
+
+- `lint`
+- `format`
+- `test`
+- `build-dist`
+- `security`
+
+This set enforces linting, formatting, tests, action bundle + committed `dist/` freshness, and lightweight security scanning on every PR.
+
+Security gate details:
+
+- `bun run audit` executes `npm audit --audit-level=critical` (CI-friendly dependency gate).
+- `security` job also runs gitleaks to detect committed secrets.
+
 ## Local Development
 
 ```bash
@@ -123,6 +147,9 @@ bun run lint
 bun run format:check
 bun test
 bun run package
+bun run dist:check
+bun run audit
+bun run secrets:scan
 ```
 
 Optional task aliases are also available:
@@ -132,6 +159,11 @@ task ci:lint
 task ci:format:check
 task ci:test
 task ci:package
+task ci:dist:check
+task ci:audit
+task ci:secrets:scan
+task ci:security
+task ci:all
 ```
 
 ## Release Strategy

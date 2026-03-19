@@ -11,7 +11,10 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "package": "bun run build && ncc build src/main.ts -o dist --source-map --license licenses.txt",
-    "ci": "bun run lint && bun run format:check && bun run test && bun run package"
+    "dist:check": "git diff --exit-code -- dist/",
+    "audit": "npm audit --audit-level=critical",
+    "secrets:scan": "gitleaks git --redact --no-banner",
+    "ci": "bun run lint && bun run format:check && bun run test && bun run package && bun run dist:check && bun run audit && bun run secrets:scan"
   },
   "engines": {
     "node": ">=20"

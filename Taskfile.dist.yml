@@ -1,0 +1,15 @@
+version: '3'
+
+includes:
+  ci: ./taskfiles/ci.yml
+
+tasks:
+  setup:
+    desc: Install npm dependencies
+    cmds:
+      - npm ci
+
+  package:
+    desc: Bundle TypeScript action into dist/
+    cmds:
+      - npm run package

@@ -1,0 +1,19 @@
+name: Merge Train Action
+description: Safely prepares labeled pull requests for merge-train workflows.
+author: merge-train-action maintainers
+inputs:
+  label:
+    description: Label that marks pull requests as merge-train candidates.
+    required: false
+    default: merge-train
+outputs:
+  label:
+    description: Label value used by the action run.
+  status:
+    description: Execution status for downstream workflow steps.
+runs:
+  using: node20
+  main: dist/index.js
+branding:
+  icon: git-merge
+  color: blue

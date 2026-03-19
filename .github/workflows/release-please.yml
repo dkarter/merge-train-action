@@ -22,9 +22,9 @@ jobs:
     steps:
       - name: Run release-please
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

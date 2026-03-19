@@ -1,0 +1,6 @@
+# Local workmux config for merge-train-action
+main_branch: main
+worktree_dir: .worktrees
+
+# Avoid unrelated global hooks (for example Elixir hooks) in this TS repo.
+pre_merge: []

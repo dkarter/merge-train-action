@@ -10,6 +10,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "commit:bot": "./scripts/agent-commit.sh",
     "package": "bun run build && ncc build src/main.ts -o dist --source-map --license licenses.txt",
     "dist:check": "git diff --exit-code -- dist/",
     "audit": "npm audit --audit-level=critical",

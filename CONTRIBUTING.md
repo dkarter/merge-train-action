@@ -41,6 +41,13 @@ bun run package
   - security scan is clean (`bun run audit` and `bun run secrets:scan` / CI gitleaks job)
   - `dist/` output is fresh for action runtime changes
 
+## Agent Branch Commits
+
+- When GPG/signing prompts block autonomous commits on worktree or feature branches, use `scripts/agent-commit.sh`.
+- The helper sets bot identity defaults from `MERGE_TRAIN_BOT_NAME` and `MERGE_TRAIN_BOT_EMAIL` and commits with `--no-gpg-sign`.
+- You can override either identity field with environment variables when needed for repository-specific attribution.
+- Do not force-push protected branches.
+
 ## Required Branch Protection
 
 For the default branch, enable:
@@ -58,3 +65,11 @@ Required status checks:
 - `test`
 - `build-dist`
 - `security`
+
+## Post-Merge CI Verification Loop
+
+After merge to `main`:
+
+1. Verify the first `main` CI run.
+2. If any job fails, open a remediation task immediately.
+3. Reproduce locally (prefer `bun run ci`), ship the smallest safe fix with tests, and open a follow-up PR.

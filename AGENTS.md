@@ -18,6 +18,13 @@ This file is the persistent execution memory for agent-driven tasks in this repo
 - Confirm no skipped quality gates: lint, format check, test, package, dist check, audit, and secrets scan.
 - Do not merge if any gate fails.
 
+## Bot Identity Commit Path (Agent Branches)
+
+- On worktree/feature branches, use `scripts/agent-commit.sh` when signing prompts block automation.
+- Helper uses bot identity defaults (`MERGE_TRAIN_BOT_NAME`, `MERGE_TRAIN_BOT_EMAIL`) and runs `git commit --no-gpg-sign`.
+- Override defaults with env vars if a repository requires specific bot attribution.
+- Do not force-push protected branches.
+
 ## Post-Merge CI Verification And Remediation Loop
 
 1. Verify the first `main` CI run after merge.

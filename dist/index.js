@@ -29972,6 +29972,16 @@ const normalizeStatusState = (state) => {
     }
     return 'pending';
 };
+const extractLabelNames = (labels) => {
+    return labels
+        .map((label) => {
+        if (typeof label === 'string') {
+            return label;
+        }
+        return typeof label.name === 'string' ? label.name : null;
+    })
+        .filter((label) => Boolean(label && label.length > 0));
+};
 const createGitHubClient = (token) => {
     const octokit = github.getOctokit(token);
     return {
@@ -29990,7 +30000,8 @@ const createGitHubClient = (token) => {
                     : null,
                 mergeableState: response.data.mergeable_state ?? null,
                 headSha: response.data.head.sha,
-                baseRef: response.data.base.ref
+                baseRef: response.data.base.ref,
+                labels: extractLabelNames(response.data.labels)
             };
         },
         updateBranch: async ({ owner, repo, pullNumber, expectedHeadSha }) => {
@@ -30035,18 +30046,18 @@ const createGitHubClient = (token) => {
         },
         getRequiredCheckContexts: async ({ owner, repo, branch }) => {
             try {
-                const response = await octokit.rest.repos.getBranchProtection({
+                const response = await octokit.rest.repos.getBranch({
                     owner,
                     repo,
                     branch
                 });
                 const contexts = new Set();
-                for (const context of response.data.required_status_checks?.contexts ??
-                    []) {
+                for (const context of response.data.protection?.required_status_checks
+                    ?.contexts ?? []) {
                     contexts.add(context);
                 }
-                for (const check of response.data.required_status_checks?.checks ??
-                    []) {
+                for (const check of response.data.protection?.required_status_checks
+                    ?.checks ?? []) {
                     if (typeof check.context === 'string' && check.context.length > 0) {
                         contexts.add(check.context);
                     }
@@ -30391,12 +30402,15 @@ const evaluateRequiredChecks = (params) => {
             .map((contextOutcome) => contextOutcome.requiredContext)
     };
 };
-const isNoopPullRequestState = (pullRequest) => {
+const isNoopPullRequestState = (pullRequest, labelName) => {
+    if (pullRequest.merged) {
+        return `No-op: pull request #${pullRequest.number} is already merged.`;
+    }
     if (pullRequest.state !== 'open') {
         return `No-op: pull request #${pullRequest.number} is '${pullRequest.state}', not open.`;
     }
-    if (pullRequest.merged) {
-        return `No-op: pull request #${pullRequest.number} is already merged.`;
+    if (!pullRequest.labels.includes(labelName)) {
+        return `No-op: pull request #${pullRequest.number} is no longer labeled '${labelName}'.`;
     }
     if (pullRequest.mergeable === false) {
         return `No-op: pull request #${pullRequest.number} is not mergeable (mergeable_state='${pullRequest.mergeableState ?? 'unknown'}').`;
@@ -30454,7 +30468,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
         repo,
         pullNumber
     });
-    const initialNoopReason = isNoopPullRequestState(pullRequest);
+    const initialNoopReason = isNoopPullRequestState(pullRequest, labelName);
     if (initialNoopReason) {
         logs.push(`Transition: ${initialNoopReason}`);
         return {
@@ -30505,7 +30519,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             repo,
             pullNumber
         });
-        const loopNoopReason = isNoopPullRequestState(pullRequest);
+        const loopNoopReason = isNoopPullRequestState(pullRequest, labelName);
         if (loopNoopReason) {
             logs.push(`Transition: ${loopNoopReason}`);
             return {
@@ -30585,6 +30599,11 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             };
         }
         if (latestOutcome === 'success') {
+            if (pullRequest.mergeable === null) {
+                logs.push(`Transition: required checks are green but mergeability for '${pullRequest.headSha}' is still unknown; waiting for refresh.`);
+                await sleep(pollIntervalSeconds * 1000);
+                continue;
+            }
             if (pullRequest.mergeable !== true) {
                 const blockedMessage = 'Blocked: required checks are green but pull request is not mergeable yet.';
                 logs.push(`Transition: ${blockedMessage}`);
@@ -30596,14 +30615,52 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                     logs
                 };
             }
-            logs.push(`Transition: required checks succeeded for '${pullRequest.headSha}', attempting merge.`);
+            const mergeCandidateSha = pullRequest.headSha;
+            const refreshedPullRequest = await githubClient.getPullRequest({
+                owner,
+                repo,
+                pullNumber
+            });
+            const preMergeNoopReason = isNoopPullRequestState(refreshedPullRequest, labelName);
+            if (preMergeNoopReason) {
+                logs.push(`Transition: ${preMergeNoopReason}`);
+                return {
+                    eligible: true,
+                    status: 'noop',
+                    labelName,
+                    message: preMergeNoopReason,
+                    logs
+                };
+            }
+            if (refreshedPullRequest.headSha !== mergeCandidateSha) {
+                logs.push(`Transition: head SHA changed from '${mergeCandidateSha}' to '${refreshedPullRequest.headSha}' before merge; restarting checks.`);
+                await sleep(pollIntervalSeconds * 1000);
+                continue;
+            }
+            logs.push(`Transition: required checks succeeded for '${refreshedPullRequest.headSha}', attempting merge.`);
             const mergeResult = await githubClient.mergePullRequest({
                 owner,
                 repo,
                 pullNumber,
-                sha: pullRequest.headSha
+                sha: refreshedPullRequest.headSha
             });
             if (!mergeResult.merged) {
+                const postMergePullRequest = await githubClient.getPullRequest({
+                    owner,
+                    repo,
+                    pullNumber
+                });
+                const postMergeNoopReason = isNoopPullRequestState(postMergePullRequest, labelName);
+                if (postMergeNoopReason) {
+                    logs.push(`Transition: ${postMergeNoopReason}`);
+                    return {
+                        eligible: true,
+                        status: 'noop',
+                        labelName,
+                        message: postMergeNoopReason,
+                        logs
+                    };
+                }
                 const blockedMessage = `Blocked: GitHub rejected merge attempt (${mergeResult.message}).`;
                 logs.push(`Transition: ${blockedMessage}`);
                 return {

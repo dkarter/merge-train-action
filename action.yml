@@ -3,7 +3,7 @@ description: Safely prepares labeled pull requests for merge-train workflows.
 author: merge-train-action maintainers
 inputs:
   github-token:
-    description: Token used for pull request update/check/merge API calls.
+    description: Token used for pull request update/check/merge API calls (requires contents:write, pull-requests:write, checks:read, statuses:read).
     required: false
     default: ''
   label-name:

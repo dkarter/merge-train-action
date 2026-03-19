@@ -36,6 +36,7 @@ export type PullRequestState = {
   mergeableState: string | null;
   headSha: string;
   baseRef: string;
+  labels: string[];
 };
 
 export type MergeResult = {
@@ -277,14 +278,19 @@ const evaluateRequiredChecks = (params: {
 };
 
 const isNoopPullRequestState = (
-  pullRequest: PullRequestState
+  pullRequest: PullRequestState,
+  labelName: string
 ): string | null => {
+  if (pullRequest.merged) {
+    return `No-op: pull request #${pullRequest.number} is already merged.`;
+  }
+
   if (pullRequest.state !== 'open') {
     return `No-op: pull request #${pullRequest.number} is '${pullRequest.state}', not open.`;
   }
 
-  if (pullRequest.merged) {
-    return `No-op: pull request #${pullRequest.number} is already merged.`;
+  if (!pullRequest.labels.includes(labelName)) {
+    return `No-op: pull request #${pullRequest.number} is no longer labeled '${labelName}'.`;
   }
 
   if (pullRequest.mergeable === false) {
@@ -368,7 +374,7 @@ export const runMergeTrain = async ({
     pullNumber
   });
 
-  const initialNoopReason = isNoopPullRequestState(pullRequest);
+  const initialNoopReason = isNoopPullRequestState(pullRequest, labelName);
   if (initialNoopReason) {
     logs.push(`Transition: ${initialNoopReason}`);
     return {
@@ -434,7 +440,7 @@ export const runMergeTrain = async ({
       pullNumber
     });
 
-    const loopNoopReason = isNoopPullRequestState(pullRequest);
+    const loopNoopReason = isNoopPullRequestState(pullRequest, labelName);
     if (loopNoopReason) {
       logs.push(`Transition: ${loopNoopReason}`);
       return {
@@ -534,6 +540,14 @@ export const runMergeTrain = async ({
     }
 
     if (latestOutcome === 'success') {
+      if (pullRequest.mergeable === null) {
+        logs.push(
+          `Transition: required checks are green but mergeability for '${pullRequest.headSha}' is still unknown; waiting for refresh.`
+        );
+        await sleep(pollIntervalSeconds * 1000);
+        continue;
+      }
+
       if (pullRequest.mergeable !== true) {
         const blockedMessage =
           'Blocked: required checks are green but pull request is not mergeable yet.';
@@ -547,17 +561,67 @@ export const runMergeTrain = async ({
         };
       }
 
+      const mergeCandidateSha = pullRequest.headSha;
+      const refreshedPullRequest = await githubClient.getPullRequest({
+        owner,
+        repo,
+        pullNumber
+      });
+
+      const preMergeNoopReason = isNoopPullRequestState(
+        refreshedPullRequest,
+        labelName
+      );
+      if (preMergeNoopReason) {
+        logs.push(`Transition: ${preMergeNoopReason}`);
+        return {
+          eligible: true,
+          status: 'noop',
+          labelName,
+          message: preMergeNoopReason,
+          logs
+        };
+      }
+
+      if (refreshedPullRequest.headSha !== mergeCandidateSha) {
+        logs.push(
+          `Transition: head SHA changed from '${mergeCandidateSha}' to '${refreshedPullRequest.headSha}' before merge; restarting checks.`
+        );
+        await sleep(pollIntervalSeconds * 1000);
+        continue;
+      }
+
       logs.push(
-        `Transition: required checks succeeded for '${pullRequest.headSha}', attempting merge.`
+        `Transition: required checks succeeded for '${refreshedPullRequest.headSha}', attempting merge.`
       );
       const mergeResult = await githubClient.mergePullRequest({
         owner,
         repo,
         pullNumber,
-        sha: pullRequest.headSha
+        sha: refreshedPullRequest.headSha
       });
 
       if (!mergeResult.merged) {
+        const postMergePullRequest = await githubClient.getPullRequest({
+          owner,
+          repo,
+          pullNumber
+        });
+        const postMergeNoopReason = isNoopPullRequestState(
+          postMergePullRequest,
+          labelName
+        );
+        if (postMergeNoopReason) {
+          logs.push(`Transition: ${postMergeNoopReason}`);
+          return {
+            eligible: true,
+            status: 'noop',
+            labelName,
+            message: postMergeNoopReason,
+            logs
+          };
+        }
+
         const blockedMessage = `Blocked: GitHub rejected merge attempt (${mergeResult.message}).`;
         logs.push(`Transition: ${blockedMessage}`);
         return {

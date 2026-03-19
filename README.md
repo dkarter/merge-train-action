@@ -26,6 +26,9 @@ on:
 jobs:
   merge-train:
     runs-on: ubuntu-latest
+    concurrency:
+      group: merge-train-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.ref }}
+      cancel-in-progress: true
     permissions:
       contents: write
       pull-requests: write
@@ -52,6 +55,9 @@ on:
 jobs:
   merge-train:
     runs-on: ubuntu-latest
+    concurrency:
+      group: merge-train-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.ref }}
+      cancel-in-progress: true
     permissions:
       contents: write
       pull-requests: write
@@ -86,11 +92,28 @@ For eligible pull requests the action orchestrates:
 Deterministic behavior:
 
 - Closed, merged, or not-mergeable PRs return clean `noop` with logs.
+- PRs that lose the merge-train label during execution return clean `noop`.
+- Head SHA changes detected before merge restart the check loop to avoid stale merges.
 - Failed checks trigger at most one rerun attempt when `rerun-failed-checks` is enabled.
 - Action returns `blocked` with failing check names if checks are still failing.
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.
+
+## Permissions and Safety
+
+Use the minimum job permissions below for this action:
+
+- `contents: write` to create the merge commit when GitHub accepts merge.
+- `pull-requests: write` to read PR state, update branch, and call merge API.
+- `checks: read` and `statuses: read` to evaluate required checks.
+
+Safety guardrails in this action:
+
+- Uses optimistic SHA merge (`pulls.merge` with `sha`) to prevent stale-head merges.
+- Re-checks PR state and label before merge; exits `noop` if state changed.
+- Treats already-merged/closed or otherwise non-actionable PRs as idempotent no-op outcomes.
+- Failed checks can rerun once when enabled; no repeated rerun loops.
 
 ## Local Development
 

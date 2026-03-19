@@ -20,6 +20,20 @@ const normalizeStatusState = (
   return 'pending';
 };
 
+const extractLabelNames = (
+  labels: Array<{ name?: string } | string>
+): string[] => {
+  return labels
+    .map((label) => {
+      if (typeof label === 'string') {
+        return label;
+      }
+
+      return typeof label.name === 'string' ? label.name : null;
+    })
+    .filter((label): label is string => Boolean(label && label.length > 0));
+};
+
 export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
   const octokit = github.getOctokit(token);
 
@@ -44,7 +58,8 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
             : null,
         mergeableState: response.data.mergeable_state ?? null,
         headSha: response.data.head.sha,
-        baseRef: response.data.base.ref
+        baseRef: response.data.base.ref,
+        labels: extractLabelNames(response.data.labels)
       };
     },
 
@@ -102,20 +117,20 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
 
     getRequiredCheckContexts: async ({ owner, repo, branch }) => {
       try {
-        const response = await octokit.rest.repos.getBranchProtection({
+        const response = await octokit.rest.repos.getBranch({
           owner,
           repo,
           branch
         });
 
         const contexts = new Set<string>();
-        for (const context of response.data.required_status_checks?.contexts ??
-          []) {
+        for (const context of response.data.protection?.required_status_checks
+          ?.contexts ?? []) {
           contexts.add(context);
         }
 
-        for (const check of response.data.required_status_checks?.checks ??
-          []) {
+        for (const check of response.data.protection?.required_status_checks
+          ?.checks ?? []) {
           if (typeof check.context === 'string' && check.context.length > 0) {
             contexts.add(check.context);
           }

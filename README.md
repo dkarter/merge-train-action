@@ -12,12 +12,14 @@ This repository is bootstrapped with a production-ready TypeScript-based JavaScr
 
 ## Usage
 
+### Default label (`ready-to-merge`)
+
 ```yaml
 name: Merge Train
 
 on:
   pull_request:
-    types: [labeled]
+    types: [opened, reopened, synchronize, labeled]
 
 jobs:
   merge-train:
@@ -29,8 +31,38 @@ jobs:
       - name: Run merge train action
         uses: your-org/merge-train-action@v1
         with:
-          label: merge-train
+          label-name: ready-to-merge
 ```
+
+### Custom label
+
+```yaml
+name: Merge Train (Custom Label)
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+
+jobs:
+  merge-train:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run merge train action
+        uses: your-org/merge-train-action@v1
+        with:
+          label-name: ship-it
+          rerun-failed-checks: 'false'
+```
+
+The action is eligible when:
+
+- the pull request payload already contains `label-name`
+- a `pull_request` `labeled` event adds `label-name`
+
+Otherwise the action exits as a no-op and sets `status` to `noop`.
 
 ## Local Development
 

@@ -2,12 +2,16 @@ name: Merge Train Action
 description: Safely prepares labeled pull requests for merge-train workflows.
 author: merge-train-action maintainers
 inputs:
-  label:
+  label-name:
     description: Label that marks pull requests as merge-train candidates.
     required: false
-    default: merge-train
+    default: ready-to-merge
+  rerun-failed-checks:
+    description: Placeholder toggle for rerun behavior in later tickets.
+    required: false
+    default: 'false'
 outputs:
-  label:
+  label-name:
     description: Label value used by the action run.
   status:
     description: Execution status for downstream workflow steps.

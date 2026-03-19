@@ -25684,14 +25684,34 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.run = void 0;
 const core = __importStar(__nccwpck_require__(7484));
+const fs = __importStar(__nccwpck_require__(3024));
 const merge_train_1 = __nccwpck_require__(3776);
+const merge_train_2 = __nccwpck_require__(3776);
+const toBoolean = (value) => value.toLowerCase() === 'true';
+const readPayload = () => {
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (!eventPath) {
+        return {};
+    }
+    const payloadContent = fs.readFileSync(eventPath, 'utf8');
+    return JSON.parse(payloadContent);
+};
 const run = async () => {
     try {
-        const label = core.getInput('label', { required: true });
-        const result = await (0, merge_train_1.runMergeTrain)(label);
+        const configuredLabel = core.getInput('label-name') || merge_train_2.DEFAULT_LABEL_NAME;
+        const rerunFailedChecks = toBoolean(core.getInput('rerun-failed-checks') || 'false');
+        const eventName = process.env.GITHUB_EVENT_NAME || '';
+        const payload = readPayload();
+        const result = await (0, merge_train_1.runMergeTrain)({
+            eventName,
+            eventAction: payload.action,
+            payload,
+            labelName: configuredLabel
+        });
         core.info(result.message);
-        core.setOutput('label', result.label);
-        core.setOutput('status', 'ok');
+        core.info(`Rerun toggle is ${rerunFailedChecks ? 'enabled' : 'disabled'} (stub only).`);
+        core.setOutput('label-name', result.labelName);
+        core.setOutput('status', result.eligible ? 'ok' : 'noop');
     }
     catch (error) {
         if (error instanceof Error) {
@@ -25702,7 +25722,9 @@ const run = async () => {
     }
 };
 exports.run = run;
-void (0, exports.run)();
+if (require.main === require.cache[eval('__filename')]) {
+    void (0, exports.run)();
+}
 
 
 /***/ }),
@@ -25713,11 +25735,52 @@ void (0, exports.run)();
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.runMergeTrain = void 0;
-const runMergeTrain = async (label) => {
+exports.runMergeTrain = exports.DEFAULT_LABEL_NAME = void 0;
+exports.DEFAULT_LABEL_NAME = 'ready-to-merge';
+const parseLabelName = (label) => {
+    if (!label || typeof label !== 'object') {
+        return null;
+    }
+    const labelName = label.name;
+    if (typeof labelName !== 'string') {
+        return null;
+    }
+    return labelName;
+};
+const pullRequestHasLabel = (pullRequest, labelName) => {
+    if (!pullRequest || !Array.isArray(pullRequest.labels)) {
+        return false;
+    }
+    return pullRequest.labels.some((label) => parseLabelName(label) === labelName);
+};
+const runMergeTrain = async ({ eventName, eventAction, payload, labelName }) => {
+    const webhookPayload = payload;
+    if (eventName !== 'pull_request') {
+        return {
+            eligible: false,
+            labelName,
+            message: `No-op: event '${eventName}' is not supported. Waiting for pull_request events.`
+        };
+    }
+    if (pullRequestHasLabel(webhookPayload.pull_request, labelName)) {
+        return {
+            eligible: true,
+            labelName,
+            message: `Merge train trigger eligible: pull request already has label '${labelName}'.`
+        };
+    }
+    const addedLabelName = parseLabelName(webhookPayload.label);
+    if (eventAction === 'labeled' && addedLabelName === labelName) {
+        return {
+            eligible: true,
+            labelName,
+            message: `Merge train trigger eligible: added label '${labelName}' matches configuration.`
+        };
+    }
     return {
-        label,
-        message: `Merge train bootstrap complete for label: ${label}`
+        eligible: false,
+        labelName,
+        message: `No-op: pull request is not labeled '${labelName}' for event action '${eventAction ?? 'unknown'}'.`
     };
 };
 exports.runMergeTrain = runMergeTrain;
@@ -25842,6 +25905,14 @@ module.exports = require("node:crypto");
 
 "use strict";
 module.exports = require("node:events");
+
+/***/ }),
+
+/***/ 3024:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:fs");
 
 /***/ }),
 

@@ -149,8 +149,22 @@ Security gate details:
 
 ## Local Development
 
+Install toolchain and dependencies:
+
 ```bash
+mise install
 bun install
+```
+
+`mise` postinstall runs `lefthook install`, so git hooks are installed automatically when tool setup runs. If you need to reinstall hooks manually, run:
+
+```bash
+lefthook install
+```
+
+Run local checks:
+
+```bash
 bun run lint
 bun run format:check
 bun test

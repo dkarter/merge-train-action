@@ -1,0 +1,14 @@
+commit-msg:
+  commands:
+    conventional-commit:
+      run: 'bash -c ''IFS= read -r subject < "{1}" && [[ "$subject" =~ ^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\(.+\))?!?:\ .+ ]]'''
+
+pre-commit:
+  commands:
+    gitleaks-staged:
+      run: gitleaks git --staged --redact --no-banner
+
+pre-push:
+  commands:
+    ci:
+      run: bun run ci

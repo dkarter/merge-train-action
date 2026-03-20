@@ -1,2 +1,7 @@
 [tools]
 node = "20"
+lefthook = "2.1.4"
+gitleaks = "8.30.0"
+
+[hooks]
+postinstall = "lefthook install"

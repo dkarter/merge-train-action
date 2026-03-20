@@ -4,14 +4,17 @@ Thanks for contributing to `merge-train-action`.
 
 ## Prerequisites
 
-- Node.js 20 (configured via `mise.toml`)
+- Node.js 20, lefthook, and gitleaks (configured via `mise.toml`)
 - Bun
 
 ## Setup
 
 ```bash
+mise install
 bun install
 ```
+
+`mise` postinstall runs `lefthook install`, so git hooks are installed as part of tool setup. If hooks are missing, run `lefthook install` manually.
 
 ## Development Checks
 

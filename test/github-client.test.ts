@@ -129,7 +129,8 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
       owner: 'acme',
       repo: 'merge-train-action',
       issue_number: 9,
-      per_page: 100
+      per_page: 100,
+      page: 1
     });
     expect(createComment).toHaveBeenCalledTimes(1);
     expect(createComment).toHaveBeenCalledWith(
@@ -186,7 +187,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     expect(commentId).toBe(42);
   });
 
-  it('picks an existing marked bot comment when duplicate comments exist', async () => {
+  it('keeps the oldest marked status comment and deletes duplicate markers', async () => {
     const listComments = vi.fn().mockResolvedValue({
       data: [
         {
@@ -209,13 +210,15 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     });
     const createComment = vi.fn();
     const updateComment = vi.fn().mockResolvedValue(undefined);
+    const deleteComment = vi.fn().mockResolvedValue(undefined);
 
     vi.mocked(github.getOctokit).mockReturnValue({
       rest: {
         issues: {
           listComments,
           createComment,
-          updateComment
+          updateComment,
+          deleteComment
         }
       }
     } as never);
@@ -230,9 +233,14 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
 
     expect(createComment).not.toHaveBeenCalled();
     expect(updateComment).toHaveBeenCalledWith(
-      expect.objectContaining({ comment_id: 20 })
+      expect.objectContaining({ comment_id: 10 })
     );
-    expect(commentId).toBe(20);
+    expect(deleteComment).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      comment_id: 20
+    });
+    expect(commentId).toBe(10);
   });
 
   it('updates a previously created comment id directly to avoid duplicate comments', async () => {
@@ -270,9 +278,142 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     expect(commentId).toBe(77);
   });
 
-  it('does not create duplicate comments when direct update returns 404', async () => {
-    const listComments = vi.fn();
+  it('serializes concurrent upserts for the same PR to avoid duplicate creation', async () => {
+    let nextId = 501;
+    const comments: Array<{ id: number; body: string }> = [];
+    const listComments = vi.fn().mockImplementation(async () => ({
+      data: comments.map((comment) => ({
+        id: comment.id,
+        body: comment.body
+      }))
+    }));
+    const createComment = vi.fn().mockImplementation(async ({ body }) => {
+      await Promise.resolve();
+      const id = nextId;
+      nextId += 1;
+      comments.push({ id, body });
+      return { data: { id } };
+    });
+    const updateComment = vi
+      .fn()
+      .mockImplementation(async ({ comment_id, body }) => {
+        const match = comments.find((comment) => comment.id === comment_id);
+        if (match) {
+          match.body = body;
+        }
+        return undefined;
+      });
+    const deleteComment = vi.fn().mockImplementation(async ({ comment_id }) => {
+      const index = comments.findIndex((comment) => comment.id === comment_id);
+      if (index >= 0) {
+        comments.splice(index, 1);
+      }
+      return undefined;
+    });
+
+    vi.mocked(github.getOctokit).mockReturnValue({
+      rest: {
+        issues: {
+          listComments,
+          createComment,
+          updateComment,
+          deleteComment
+        }
+      }
+    } as never);
+
+    const client = createGitHubClient('token');
+    const [firstCommentId, secondCommentId] = await Promise.all([
+      client.upsertMergeTrainStatusComment({
+        owner: 'acme',
+        repo: 'merge-train-action',
+        pullNumber: 9,
+        body: 'phase one body'
+      }),
+      client.upsertMergeTrainStatusComment({
+        owner: 'acme',
+        repo: 'merge-train-action',
+        pullNumber: 9,
+        body: 'phase two body'
+      })
+    ]);
+
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(deleteComment).not.toHaveBeenCalled();
+    expect(firstCommentId).toBe(501);
+    expect(secondCommentId).toBe(501);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain('phase two body');
+  });
+
+  it('dedupes marker comments created by parallel external runs', async () => {
+    const comments: Array<{ id: number; body: string }> = [
+      {
+        id: 40,
+        body: 'newer status\n\n<!-- merge-train-status-comment:v1 -->'
+      },
+      { id: 30, body: 'older status\n\n<!-- merge-train-status-comment:v1 -->' }
+    ];
+    const listComments = vi.fn().mockImplementation(async () => ({
+      data: comments.map((comment) => ({
+        id: comment.id,
+        body: comment.body
+      }))
+    }));
     const createComment = vi.fn();
+    const updateComment = vi
+      .fn()
+      .mockImplementation(async ({ comment_id, body }) => {
+        const match = comments.find((comment) => comment.id === comment_id);
+        if (match) {
+          match.body = body;
+        }
+        return undefined;
+      });
+    const deleteComment = vi.fn().mockImplementation(async ({ comment_id }) => {
+      const index = comments.findIndex((comment) => comment.id === comment_id);
+      if (index >= 0) {
+        comments.splice(index, 1);
+      }
+      return undefined;
+    });
+
+    vi.mocked(github.getOctokit).mockReturnValue({
+      rest: {
+        issues: {
+          listComments,
+          createComment,
+          updateComment,
+          deleteComment
+        }
+      }
+    } as never);
+
+    const client = createGitHubClient('token');
+    const commentId = await client.upsertMergeTrainStatusComment({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      pullNumber: 9,
+      body: 'authoritative body'
+    });
+
+    expect(commentId).toBe(30);
+    expect(updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 30 })
+    );
+    expect(deleteComment).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      comment_id: 40
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.id).toBe(30);
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('reconciles after direct update 404 by re-listing and creating one marker when needed', async () => {
+    const listComments = vi.fn().mockResolvedValue({ data: [] });
+    const createComment = vi.fn().mockResolvedValue({ data: { id: 88 } });
     const updateComment = vi.fn().mockRejectedValue({
       status: 404,
       message: 'Not Found'
@@ -298,8 +439,8 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     });
 
     expect(updateComment).toHaveBeenCalledTimes(3);
-    expect(listComments).not.toHaveBeenCalled();
-    expect(createComment).not.toHaveBeenCalled();
-    expect(commentId).toBe(77);
+    expect(listComments).toHaveBeenCalledTimes(2);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(commentId).toBe(88);
   });
 });

@@ -244,7 +244,14 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
   });
 
   it('updates a previously created comment id directly to avoid duplicate comments', async () => {
-    const listComments = vi.fn();
+    const listComments = vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: 77,
+          body: 'existing\n\n<!-- merge-train-status-comment:v1 -->'
+        }
+      ]
+    });
     const createComment = vi.fn();
     const updateComment = vi.fn().mockResolvedValue(undefined);
 
@@ -273,7 +280,13 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
       comment_id: 77,
       body: expect.stringContaining('new status body')
     });
-    expect(listComments).not.toHaveBeenCalled();
+    expect(listComments).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      issue_number: 9,
+      per_page: 100,
+      page: 1
+    });
     expect(createComment).not.toHaveBeenCalled();
     expect(commentId).toBe(77);
   });

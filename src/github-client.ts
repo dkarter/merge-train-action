@@ -184,6 +184,45 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
     });
   };
 
+  const reconcileStatusComments = async ({
+    owner,
+    repo,
+    pullNumber,
+    normalizedBody
+  }: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    normalizedBody: string;
+  }): Promise<number | null> => {
+    const statusComments = selectMarkedStatusComments(
+      await listIssueComments({ owner, repo, pullNumber })
+    );
+
+    const authoritativeComment = statusComments[0];
+    if (!authoritativeComment) {
+      return null;
+    }
+
+    if (authoritativeComment.body !== normalizedBody) {
+      await updateStatusCommentById({
+        owner,
+        repo,
+        commentId: authoritativeComment.id,
+        body: normalizedBody
+      });
+    }
+
+    await cleanupDuplicateStatusComments({
+      owner,
+      repo,
+      authoritativeCommentId: authoritativeComment.id,
+      statusComments
+    });
+
+    return authoritativeComment.id;
+  };
+
   return {
     getPullRequest: async ({
       owner,
@@ -483,7 +522,13 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
                 commentId,
                 body: normalizedBody
               });
-              return commentId;
+              const reconciledCommentId = await reconcileStatusComments({
+                owner,
+                repo,
+                pullNumber,
+                normalizedBody
+              });
+              return reconciledCommentId ?? commentId;
             } catch (error) {
               if (
                 typeof error === 'object' &&

@@ -73,7 +73,23 @@ jobs:
           wait-timeout-seconds: '600'
           poll-interval-seconds: '15'
           rerun-failed-checks: 'false' # optional, defaults to true
+          pause: 'false' # optional, defaults to false
+          pause-reason: '' # optional, logged when pause=true
 ```
+
+### Pause and resume controls
+
+Use `pause: 'true'` to force a safe no-op run (no branch update, no rerun request, no merge attempt).
+
+```yaml
+with:
+  github-token: ${{ github.token }}
+  label-name: ready-to-merge
+  pause: 'true'
+  pause-reason: 'maintenance window: GitHub incident #1234'
+```
+
+When paused, the action logs an explicit pause message and returns output `status: noop`.
 
 The action is eligible when:
 
@@ -92,6 +108,7 @@ For eligible pull requests the action orchestrates:
 Deterministic behavior:
 
 - Closed, merged, or not-mergeable PRs return clean `noop` with logs.
+- `pause: 'true'` always returns clean `noop` and skips all update/merge side effects.
 - PRs that lose the merge-train label during execution return clean `noop`.
 - Head SHA changes detected before merge restart the check loop to avoid stale merges.
 - Failed checks trigger at most one rerun attempt when `rerun-failed-checks` is enabled.
@@ -99,6 +116,13 @@ Deterministic behavior:
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.
+
+## Operational Playbook
+
+- Planned maintenance window: set `pause: 'true'` and provide `pause-reason` in workflow configuration.
+- Incident response: set `pause: 'true'` immediately to prevent any merge-train mutations while triaging.
+- Resume: set `pause: 'false'` (or remove pause inputs) to restore normal deterministic processing.
+- Verification after resume: trigger a labeled PR event (`synchronize` or `labeled`) and confirm action logs show normal transition flow.
 
 ## Permissions and Safety
 

@@ -65,6 +65,16 @@ const buildRunMergeTrainArgs = (overrides: Record<string, unknown> = {}) => ({
   ...overrides
 });
 
+const expectDefaultInputCalls = (): void => {
+  expect(mocked.getInput).toHaveBeenNthCalledWith(1, 'label-name');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(2, 'pause');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(3, 'pause-reason');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(4, 'rerun-failed-checks');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(5, 'wait-timeout-seconds');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(6, 'poll-interval-seconds');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(7, 'github-token');
+};
+
 describe('run', () => {
   beforeEach(() => {
     mocked.info.mockReset();
@@ -95,11 +105,7 @@ describe('run', () => {
 
     await run();
 
-    expect(mocked.getInput).toHaveBeenNthCalledWith(1, 'label-name');
-    expect(mocked.getInput).toHaveBeenNthCalledWith(2, 'rerun-failed-checks');
-    expect(mocked.getInput).toHaveBeenNthCalledWith(3, 'wait-timeout-seconds');
-    expect(mocked.getInput).toHaveBeenNthCalledWith(4, 'poll-interval-seconds');
-    expect(mocked.getInput).toHaveBeenNthCalledWith(5, 'github-token');
+    expectDefaultInputCalls();
     expect(mocked.createGitHubClient).toHaveBeenCalledWith('gh-token');
     expect(mocked.runMergeTrain).toHaveBeenCalledWith(buildRunMergeTrainArgs());
     expect(mocked.info).toHaveBeenCalledWith(
@@ -135,6 +141,7 @@ describe('run', () => {
     expect(mocked.runMergeTrain).toHaveBeenCalledWith(
       buildRunMergeTrainArgs({ labelName: 'queue-me' })
     );
+    expectDefaultInputCalls();
     expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is enabled.');
     expect(mocked.setOutput).toHaveBeenCalledWith('label-name', 'queue-me');
     expect(mocked.setOutput).toHaveBeenCalledWith('status', 'noop');
@@ -150,6 +157,27 @@ describe('run', () => {
     expect(mocked.setFailed).toHaveBeenCalledWith('boom');
   });
 
+  it('returns clean noop without side effects when pause is enabled', async () => {
+    mockInputs({ pause: 'true', 'pause-reason': 'maintenance window' });
+
+    await run();
+
+    expect(mocked.getInput).toHaveBeenNthCalledWith(1, 'label-name');
+    expect(mocked.getInput).toHaveBeenNthCalledWith(2, 'pause');
+    expect(mocked.getInput).toHaveBeenNthCalledWith(3, 'pause-reason');
+    expect(mocked.createGitHubClient).not.toHaveBeenCalled();
+    expect(mocked.runMergeTrain).not.toHaveBeenCalled();
+    expect(mocked.info).toHaveBeenCalledWith(
+      'Paused: merge train execution skipped (maintenance window).'
+    );
+    expect(mocked.setOutput).toHaveBeenCalledWith(
+      'label-name',
+      'ready-to-merge'
+    );
+    expect(mocked.setOutput).toHaveBeenCalledWith('status', 'noop');
+    expect(mocked.setFailed).not.toHaveBeenCalled();
+  });
+
   it('sets failed when no token is provided', async () => {
     mockInputs({ 'label-name': 'ready-to-merge', 'github-token': '' });
     vi.stubEnv('GITHUB_TOKEN', '');
@@ -160,6 +188,23 @@ describe('run', () => {
       'Missing GitHub token. Set input github-token or GITHUB_TOKEN.'
     );
     expect(mocked.runMergeTrain).not.toHaveBeenCalled();
+  });
+
+  it('runs normally when pause is explicitly disabled', async () => {
+    mockInputs({ pause: 'false' });
+    mocked.runMergeTrain.mockResolvedValue({
+      eligible: true,
+      status: 'noop',
+      labelName: 'ready-to-merge',
+      message: "No-op: pull request #9 is 'closed', not open.",
+      logs: []
+    });
+
+    await run();
+
+    expect(mocked.runMergeTrain).toHaveBeenCalledWith(buildRunMergeTrainArgs());
+    expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is enabled.');
+    expect(mocked.setOutput).toHaveBeenCalledWith('status', 'noop');
   });
 
   it('parses rerun toggle robustly and disables rerun for false-like values', async () => {
@@ -177,6 +222,7 @@ describe('run', () => {
     expect(mocked.runMergeTrain).toHaveBeenCalledWith(
       expect.objectContaining({ rerunFailedChecks: false })
     );
+    expectDefaultInputCalls();
     expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is disabled.');
   });
 });

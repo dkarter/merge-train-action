@@ -22,6 +22,14 @@ inputs:
     description: Whether to request one-time rerun for failed required check-runs.
     required: false
     default: 'true'
+  pause:
+    description: Whether to pause merge-train processing and exit as a clean no-op.
+    required: false
+    default: 'false'
+  pause-reason:
+    description: Optional operator-provided reason emitted in logs when pause is enabled.
+    required: false
+    default: ''
 outputs:
   label-name:
     description: Label value used by the action run.

@@ -30273,6 +30273,13 @@ const merge_train_2 = __nccwpck_require__(8589);
 const github_client_1 = __nccwpck_require__(4327);
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'n', 'off']);
+const INPUT_LABEL_NAME = 'label-name';
+const INPUT_GITHUB_TOKEN = 'github-token';
+const INPUT_RERUN_FAILED_CHECKS = 'rerun-failed-checks';
+const INPUT_WAIT_TIMEOUT_SECONDS = 'wait-timeout-seconds';
+const INPUT_POLL_INTERVAL_SECONDS = 'poll-interval-seconds';
+const INPUT_PAUSE = 'pause';
+const INPUT_PAUSE_REASON = 'pause-reason';
 const toBoolean = (value, fallback) => {
     const normalized = value.trim().toLowerCase();
     if (TRUE_VALUES.has(normalized)) {
@@ -30300,11 +30307,22 @@ const readPayload = () => {
 };
 const run = async () => {
     try {
-        const configuredLabel = core.getInput('label-name') || merge_train_2.DEFAULT_LABEL_NAME;
-        const rerunFailedChecks = toBoolean(core.getInput('rerun-failed-checks') || '', true);
-        const waitTimeoutSeconds = toPositiveInteger(core.getInput('wait-timeout-seconds') || '', merge_train_2.DEFAULT_WAIT_TIMEOUT_SECONDS);
-        const pollIntervalSeconds = toPositiveInteger(core.getInput('poll-interval-seconds') || '', merge_train_2.DEFAULT_POLL_INTERVAL_SECONDS);
-        const token = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
+        const configuredLabel = core.getInput(INPUT_LABEL_NAME) || merge_train_2.DEFAULT_LABEL_NAME;
+        const paused = toBoolean(core.getInput(INPUT_PAUSE) || '', false);
+        const pauseReason = core.getInput(INPUT_PAUSE_REASON).trim();
+        if (paused) {
+            const pauseMessage = pauseReason
+                ? `Paused: merge train execution skipped (${pauseReason}).`
+                : 'Paused: merge train execution skipped.';
+            core.info(pauseMessage);
+            core.setOutput('label-name', configuredLabel);
+            core.setOutput('status', 'noop');
+            return;
+        }
+        const rerunFailedChecks = toBoolean(core.getInput(INPUT_RERUN_FAILED_CHECKS) || '', true);
+        const waitTimeoutSeconds = toPositiveInteger(core.getInput(INPUT_WAIT_TIMEOUT_SECONDS) || '', merge_train_2.DEFAULT_WAIT_TIMEOUT_SECONDS);
+        const pollIntervalSeconds = toPositiveInteger(core.getInput(INPUT_POLL_INTERVAL_SECONDS) || '', merge_train_2.DEFAULT_POLL_INTERVAL_SECONDS);
+        const token = core.getInput(INPUT_GITHUB_TOKEN) || process.env.GITHUB_TOKEN || '';
         if (!token) {
             throw new Error('Missing GitHub token. Set input github-token or GITHUB_TOKEN.');
         }

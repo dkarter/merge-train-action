@@ -10,6 +10,13 @@ import { createGitHubClient } from './github-client';
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'n', 'off']);
+const INPUT_LABEL_NAME = 'label-name';
+const INPUT_GITHUB_TOKEN = 'github-token';
+const INPUT_RERUN_FAILED_CHECKS = 'rerun-failed-checks';
+const INPUT_WAIT_TIMEOUT_SECONDS = 'wait-timeout-seconds';
+const INPUT_POLL_INTERVAL_SECONDS = 'poll-interval-seconds';
+const INPUT_PAUSE = 'pause';
+const INPUT_PAUSE_REASON = 'pause-reason';
 
 const toBoolean = (value: string, fallback: boolean): boolean => {
   const normalized = value.trim().toLowerCase();
@@ -45,21 +52,35 @@ const readPayload = (): unknown => {
 
 export const run = async (): Promise<void> => {
   try {
-    const configuredLabel = core.getInput('label-name') || DEFAULT_LABEL_NAME;
+    const configuredLabel =
+      core.getInput(INPUT_LABEL_NAME) || DEFAULT_LABEL_NAME;
+    const paused = toBoolean(core.getInput(INPUT_PAUSE) || '', false);
+    const pauseReason = core.getInput(INPUT_PAUSE_REASON).trim();
+
+    if (paused) {
+      const pauseMessage = pauseReason
+        ? `Paused: merge train execution skipped (${pauseReason}).`
+        : 'Paused: merge train execution skipped.';
+      core.info(pauseMessage);
+      core.setOutput('label-name', configuredLabel);
+      core.setOutput('status', 'noop');
+      return;
+    }
+
     const rerunFailedChecks = toBoolean(
-      core.getInput('rerun-failed-checks') || '',
+      core.getInput(INPUT_RERUN_FAILED_CHECKS) || '',
       true
     );
     const waitTimeoutSeconds = toPositiveInteger(
-      core.getInput('wait-timeout-seconds') || '',
+      core.getInput(INPUT_WAIT_TIMEOUT_SECONDS) || '',
       DEFAULT_WAIT_TIMEOUT_SECONDS
     );
     const pollIntervalSeconds = toPositiveInteger(
-      core.getInput('poll-interval-seconds') || '',
+      core.getInput(INPUT_POLL_INTERVAL_SECONDS) || '',
       DEFAULT_POLL_INTERVAL_SECONDS
     );
     const token =
-      core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
+      core.getInput(INPUT_GITHUB_TOKEN) || process.env.GITHUB_TOKEN || '';
     if (!token) {
       throw new Error(
         'Missing GitHub token. Set input github-token or GITHUB_TOKEN.'

@@ -113,7 +113,8 @@ export type MergeTrainGitHubClient = {
     repo: string;
     pullNumber: number;
     body: string;
-  }) => Promise<void>;
+    commentId?: number;
+  }) => Promise<number>;
 };
 
 type MergeTrainParams = {
@@ -457,6 +458,7 @@ export const runMergeTrain = async ({
 
   let lastCommentPhase: MergeTrainCommentPhase | null = null;
   let lastCommentContext: string | null = null;
+  let statusCommentId: number | undefined;
   const upsertStatusComment = async (
     phase: MergeTrainCommentPhase,
     context: string
@@ -473,11 +475,12 @@ export const runMergeTrain = async ({
       context
     });
 
-    await githubClient.upsertMergeTrainStatusComment({
+    statusCommentId = await githubClient.upsertMergeTrainStatusComment({
       owner,
       repo,
       pullNumber,
-      body: statusCommentBody
+      body: statusCommentBody,
+      commentId: statusCommentId
     });
     lastCommentPhase = phase;
     lastCommentContext = context;

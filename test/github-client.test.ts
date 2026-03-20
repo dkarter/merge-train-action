@@ -104,7 +104,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
 
   it('creates a new status comment when none exists', async () => {
     const listComments = vi.fn().mockResolvedValue({ data: [] });
-    const createComment = vi.fn().mockResolvedValue(undefined);
+    const createComment = vi.fn().mockResolvedValue({ data: { id: 101 } });
     const updateComment = vi.fn();
 
     vi.mocked(github.getOctokit).mockReturnValue({
@@ -118,7 +118,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     } as never);
 
     const client = createGitHubClient('token');
-    await client.upsertMergeTrainStatusComment({
+    const commentId = await client.upsertMergeTrainStatusComment({
       owner: 'acme',
       repo: 'merge-train-action',
       pullNumber: 9,
@@ -139,6 +139,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
       })
     );
     expect(updateComment).not.toHaveBeenCalled();
+    expect(commentId).toBe(101);
   });
 
   it('updates existing bot status comment instead of creating duplicates', async () => {
@@ -168,7 +169,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     } as never);
 
     const client = createGitHubClient('token');
-    await client.upsertMergeTrainStatusComment({
+    const commentId = await client.upsertMergeTrainStatusComment({
       owner: 'acme',
       repo: 'merge-train-action',
       pullNumber: 9,
@@ -182,6 +183,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
       comment_id: 42,
       body: expect.stringContaining('new body')
     });
+    expect(commentId).toBe(42);
   });
 
   it('picks an existing marked bot comment when duplicate comments exist', async () => {
@@ -219,7 +221,7 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     } as never);
 
     const client = createGitHubClient('token');
-    await client.upsertMergeTrainStatusComment({
+    const commentId = await client.upsertMergeTrainStatusComment({
       owner: 'acme',
       repo: 'merge-train-action',
       pullNumber: 9,
@@ -230,5 +232,41 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     expect(updateComment).toHaveBeenCalledWith(
       expect.objectContaining({ comment_id: 20 })
     );
+    expect(commentId).toBe(20);
+  });
+
+  it('updates a previously created comment id directly to avoid duplicate comments', async () => {
+    const listComments = vi.fn();
+    const createComment = vi.fn();
+    const updateComment = vi.fn().mockResolvedValue(undefined);
+
+    vi.mocked(github.getOctokit).mockReturnValue({
+      rest: {
+        issues: {
+          listComments,
+          createComment,
+          updateComment
+        }
+      }
+    } as never);
+
+    const client = createGitHubClient('token');
+    const commentId = await client.upsertMergeTrainStatusComment({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      pullNumber: 9,
+      body: 'new status body',
+      commentId: 77
+    });
+
+    expect(updateComment).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      comment_id: 77,
+      body: expect.stringContaining('new status body')
+    });
+    expect(listComments).not.toHaveBeenCalled();
+    expect(createComment).not.toHaveBeenCalled();
+    expect(commentId).toBe(77);
   });
 });

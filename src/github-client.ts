@@ -345,9 +345,32 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       owner,
       repo,
       pullNumber,
-      body
+      body,
+      commentId
     }) => {
       const normalizedBody = withStatusCommentMarker(body);
+
+      if (typeof commentId === 'number' && Number.isInteger(commentId)) {
+        try {
+          await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: commentId,
+            body: normalizedBody
+          });
+          return commentId;
+        } catch (error) {
+          if (
+            typeof error === 'object' &&
+            error !== null &&
+            'status' in error &&
+            error.status !== 404
+          ) {
+            throw error;
+          }
+        }
+      }
+
       const response = await octokit.rest.issues.listComments({
         owner,
         repo,
@@ -373,17 +396,17 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       }
 
       if (!existingComment) {
-        await octokit.rest.issues.createComment({
+        const createResponse = await octokit.rest.issues.createComment({
           owner,
           repo,
           issue_number: pullNumber,
           body: normalizedBody
         });
-        return;
+        return createResponse.data.id;
       }
 
       if (existingComment.body === normalizedBody) {
-        return;
+        return existingComment.id;
       }
 
       await octokit.rest.issues.updateComment({
@@ -392,6 +415,7 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
         comment_id: existingComment.id,
         body: normalizedBody
       });
+      return existingComment.id;
     }
   };
 };

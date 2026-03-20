@@ -42,7 +42,7 @@ const createClient = (): MergeTrainGitHubClient => ({
   getCheckRuns: vi.fn(),
   rerunCheckRuns: vi.fn(),
   mergePullRequest: vi.fn(),
-  upsertMergeTrainStatusComment: vi.fn()
+  upsertMergeTrainStatusComment: vi.fn().mockResolvedValue(1)
 });
 
 describe('runMergeTrain', () => {

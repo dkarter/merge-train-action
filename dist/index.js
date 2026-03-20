@@ -29963,6 +29963,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createGitHubClient = void 0;
 const github = __importStar(__nccwpck_require__(5683));
+const STATUS_COMMENT_MARKER = '<!-- merge-train-status-comment:v1 -->';
 const normalizeStatusState = (state) => {
     if (state === 'success') {
         return 'success';
@@ -29995,6 +29996,18 @@ const parseWorkflowRunIdFromDetailsUrl = (detailsUrl) => {
         return null;
     }
     return runId;
+};
+const isBotUser = (login, type) => {
+    if (type === 'Bot') {
+        return true;
+    }
+    return typeof login === 'string' && login.endsWith('[bot]');
+};
+const withStatusCommentMarker = (body) => {
+    if (body.includes(STATUS_COMMENT_MARKER)) {
+        return body;
+    }
+    return `${body}\n\n${STATUS_COMMENT_MARKER}`;
 };
 const createGitHubClient = (token) => {
     const octokit = github.getOctokit(token);
@@ -30218,6 +30231,47 @@ const createGitHubClient = (token) => {
                 }
                 throw error;
             }
+        },
+        upsertMergeTrainStatusComment: async ({ owner, repo, pullNumber, body }) => {
+            const normalizedBody = withStatusCommentMarker(body);
+            const response = await octokit.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100
+            });
+            let existingComment;
+            for (const comment of response.data) {
+                if (typeof comment.body !== 'string' ||
+                    !comment.body.includes(STATUS_COMMENT_MARKER) ||
+                    !isBotUser(comment.user?.login ?? null, comment.user?.type ?? '')) {
+                    continue;
+                }
+                if (!existingComment || comment.id > existingComment.id) {
+                    existingComment = {
+                        id: comment.id,
+                        body: comment.body
+                    };
+                }
+            }
+            if (!existingComment) {
+                await octokit.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pullNumber,
+                    body: normalizedBody
+                });
+                return;
+            }
+            if (existingComment.body === normalizedBody) {
+                return;
+            }
+            await octokit.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body: normalizedBody
+            });
         }
     };
 };
@@ -30382,6 +30436,52 @@ const FAILURE_CHECK_CONCLUSIONS = new Set([
     'startup_failure',
     'timed_out'
 ]);
+const COMMENT_PHASE_LABELS = {
+    'waiting-checks': 'Waiting for CI / required checks',
+    'updating-branch': 'Updating / rebasing branch',
+    merging: 'Merging',
+    merged: 'Merged',
+    blocked: 'Blocked'
+};
+const COMMENT_PHASE_ORDER = [
+    'waiting-checks',
+    'updating-branch',
+    'merging',
+    'merged'
+];
+const buildMergeTrainStatusComment = (params) => {
+    const isBlocked = params.phase === 'blocked';
+    const currentPhaseLabel = COMMENT_PHASE_LABELS[params.phase];
+    const reachedIndex = isBlocked
+        ? -1
+        : COMMENT_PHASE_ORDER.indexOf(params.phase);
+    const lifecyclePhases = [...COMMENT_PHASE_ORDER, 'blocked'];
+    const progressChecklist = lifecyclePhases
+        .map((phase, index) => {
+        const isCurrentPhase = phase === params.phase;
+        const checked = isCurrentPhase || index <= reachedIndex ? 'x' : ' ';
+        return `- [${checked}] ${COMMENT_PHASE_LABELS[phase]}`;
+    })
+        .join('\n');
+    return [
+        `## Merge Train Status: ${currentPhaseLabel}`,
+        '',
+        `Pull request #${params.pullNumber} is in the merge train for base branch \`${params.baseRef}\`.`,
+        'This PR will be automatically updated/rebased as needed and merged when the required checks are green.',
+        '',
+        '<details>',
+        '<summary>Progress context</summary>',
+        '',
+        `- Target base branch: \`${params.baseRef}\``,
+        `- Merge-train label: \`${params.labelName}\``,
+        `- Current phase: **${currentPhaseLabel}**`,
+        `- Current context: ${params.context}`,
+        '',
+        '### Lifecycle',
+        progressChecklist,
+        '</details>'
+    ].join('\n');
+};
 const parseLabelName = (label) => {
     if (!label || typeof label !== 'object') {
         return null;
@@ -30552,8 +30652,33 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             logs
         };
     }
+    let lastCommentPhase = null;
+    let lastCommentContext = null;
+    const upsertStatusComment = async (phase, context) => {
+        if (phase === lastCommentPhase && context === lastCommentContext) {
+            return;
+        }
+        const statusCommentBody = buildMergeTrainStatusComment({
+            pullNumber,
+            baseRef: pullRequest.baseRef,
+            labelName,
+            phase,
+            context
+        });
+        await githubClient.upsertMergeTrainStatusComment({
+            owner,
+            repo,
+            pullNumber,
+            body: statusCommentBody
+        });
+        lastCommentPhase = phase;
+        lastCommentContext = context;
+        logs.push(`Transition: updated PR status comment (${phase}).`);
+    };
+    await upsertStatusComment('waiting-checks', `Queued in merge train for \`${pullRequest.baseRef}\`; waiting for required checks.`);
     let updateAttempted = false;
     if (pullRequest.mergeableState === 'behind') {
+        await upsertStatusComment('updating-branch', `Branch is behind \`${pullRequest.baseRef}\`; attempting update/rebase before merge.`);
         logs.push(`Transition: pull request #${pullNumber} is behind '${pullRequest.baseRef}', attempting safe update branch.`);
         const updateResult = await githubClient.updateBranch({
             owner,
@@ -30564,12 +30689,15 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
         updateAttempted = updateResult.attempted;
         if (updateResult.updated) {
             logs.push(`Transition: update branch accepted for pull request #${pullNumber}; waiting for refreshed checks.`);
+            await upsertStatusComment('waiting-checks', `Branch update accepted; waiting for refreshed checks on base branch \`${pullRequest.baseRef}\`.`);
         }
         else if (updateResult.attempted) {
             logs.push(`Transition: update branch attempted but not applied for pull request #${pullNumber} (${updateResult.reason ?? 'unknown'}).`);
+            await upsertStatusComment('waiting-checks', `Branch update was not applied (${updateResult.reason ?? 'unknown'}); continuing to monitor required checks.`);
         }
         else {
             logs.push(`Transition: update branch unavailable for pull request #${pullNumber} (${updateResult.reason ?? 'unknown'}).`);
+            await upsertStatusComment('waiting-checks', `Branch update API unavailable (${updateResult.reason ?? 'unknown'}); continuing to monitor required checks.`);
         }
     }
     const requiredContexts = await githubClient.getRequiredCheckContexts({
@@ -30635,6 +30763,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                 ];
                 if (uniqueRerunnableCheckRuns.length === 0) {
                     const failureMessage = `Blocked: required checks failed [${failingChecksList}] and no failed check-runs were eligible for one-time rerun.`;
+                    await upsertStatusComment('blocked', `Required checks failed (${failingChecksList}) and no failed check-runs were eligible for one-time rerun.`);
                     logs.push(`Transition: ${failureMessage}`);
                     return {
                         eligible: true,
@@ -30656,12 +30785,16 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                     logs.push(`Transition: skipped rerun for check-runs [${rerunResult.skippedCheckRuns.map((skippedCheck) => `${skippedCheck.checkRunId} (${skippedCheck.reason})`).join(', ')}].`);
                 }
                 logs.push(`Transition: waiting for rerun check conclusions on '${pullRequest.headSha}' (interval ${pollIntervalSeconds}s).`);
+                await upsertStatusComment('waiting-checks', `Requested one-time rerun for failed checks (${failingChecksList}); waiting for updated results.`);
                 await sleep(pollIntervalSeconds * 1000);
                 continue;
             }
             const failureMessage = rerunAttempted
                 ? `Blocked: required checks still failing after one-time rerun [${failingChecksList}].`
                 : `Blocked: required checks failing [${failingChecksList}] (rerun disabled).`;
+            await upsertStatusComment('blocked', rerunAttempted
+                ? `Required checks are still failing after one-time rerun (${failingChecksList}).`
+                : `Required checks are failing (${failingChecksList}); merge-train rerun is disabled.`);
             logs.push(`Transition: ${failureMessage}`);
             return {
                 eligible: true,
@@ -30673,12 +30806,14 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
         }
         if (latestOutcome === 'success') {
             if (pullRequest.mergeable === null) {
+                await upsertStatusComment('waiting-checks', `Required checks are green, waiting for mergeability refresh on \`${pullRequest.headSha}\`.`);
                 logs.push(`Transition: required checks are green but mergeability for '${pullRequest.headSha}' is still unknown; waiting for refresh.`);
                 await sleep(pollIntervalSeconds * 1000);
                 continue;
             }
             if (pullRequest.mergeable !== true) {
                 const blockedMessage = 'Blocked: required checks are green but pull request is not mergeable yet.';
+                await upsertStatusComment('blocked', 'Required checks are green, but GitHub reports the pull request is not mergeable.');
                 logs.push(`Transition: ${blockedMessage}`);
                 return {
                     eligible: true,
@@ -30706,11 +30841,13 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                 };
             }
             if (refreshedPullRequest.headSha !== mergeCandidateSha) {
+                await upsertStatusComment('waiting-checks', `Head SHA changed from \`${mergeCandidateSha}\` to \`${refreshedPullRequest.headSha}\`; restarting required-check evaluation.`);
                 logs.push(`Transition: head SHA changed from '${mergeCandidateSha}' to '${refreshedPullRequest.headSha}' before merge; restarting checks.`);
                 await sleep(pollIntervalSeconds * 1000);
                 continue;
             }
             logs.push(`Transition: required checks succeeded for '${refreshedPullRequest.headSha}', attempting merge.`);
+            await upsertStatusComment('merging', `Required checks passed; merging commit \`${refreshedPullRequest.headSha}\` into \`${refreshedPullRequest.baseRef}\`.`);
             const mergeResult = await githubClient.mergePullRequest({
                 owner,
                 repo,
@@ -30735,6 +30872,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                     };
                 }
                 const blockedMessage = `Blocked: GitHub rejected merge attempt (${mergeResult.message}).`;
+                await upsertStatusComment('blocked', `GitHub rejected the merge attempt (${mergeResult.message}).`);
                 logs.push(`Transition: ${blockedMessage}`);
                 return {
                     eligible: true,
@@ -30745,6 +30883,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                 };
             }
             const mergedMessage = `Merged: pull request #${pullNumber} merged after required checks succeeded.`;
+            await upsertStatusComment('merged', `Merged into \`${refreshedPullRequest.baseRef}\` after required checks succeeded.`);
             logs.push(`Transition: ${mergedMessage}`);
             return {
                 eligible: true,
@@ -30755,10 +30894,12 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             };
         }
         logs.push(`Transition: waiting for required checks on '${pullRequest.headSha}' (interval ${pollIntervalSeconds}s).`);
+        await upsertStatusComment('waiting-checks', `Waiting for required checks on \`${pullRequest.headSha}\` for base branch \`${pullRequest.baseRef}\`.`);
         await sleep(pollIntervalSeconds * 1000);
     }
     if (updateAttempted) {
         const timeoutMessage = 'Blocked: timed out while waiting for update/check completion after safe update attempt.';
+        await upsertStatusComment('blocked', 'Timed out while waiting for branch update and required checks to complete.');
         logs.push(`Transition: ${timeoutMessage}`);
         return {
             eligible: true,
@@ -30769,6 +30910,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
         };
     }
     const timeoutMessage = 'Blocked: timed out while waiting for required checks to finish.';
+    await upsertStatusComment('blocked', 'Timed out while waiting for required checks to finish.');
     logs.push(`Transition: ${timeoutMessage}`);
     return {
         eligible: true,

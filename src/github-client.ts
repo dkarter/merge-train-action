@@ -6,6 +6,8 @@ import type {
   UpdateBranchResult
 } from './merge-train';
 
+const STATUS_COMMENT_MARKER = '<!-- merge-train-status-comment:v1 -->';
+
 const normalizeStatusState = (
   state: string
 ): 'success' | 'failure' | 'pending' => {
@@ -52,6 +54,22 @@ const parseWorkflowRunIdFromDetailsUrl = (
   }
 
   return runId;
+};
+
+const isBotUser = (login: string | null | undefined, type: string): boolean => {
+  if (type === 'Bot') {
+    return true;
+  }
+
+  return typeof login === 'string' && login.endsWith('[bot]');
+};
+
+const withStatusCommentMarker = (body: string): string => {
+  if (body.includes(STATUS_COMMENT_MARKER)) {
+    return body;
+  }
+
+  return `${body}\n\n${STATUS_COMMENT_MARKER}`;
 };
 
 export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
@@ -329,6 +347,60 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
 
         throw error;
       }
+    },
+
+    upsertMergeTrainStatusComment: async ({
+      owner,
+      repo,
+      pullNumber,
+      body
+    }) => {
+      const normalizedBody = withStatusCommentMarker(body);
+      const response = await octokit.rest.issues.listComments({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        per_page: 100
+      });
+
+      let existingComment: { id: number; body: string } | undefined;
+      for (const comment of response.data) {
+        if (
+          typeof comment.body !== 'string' ||
+          !comment.body.includes(STATUS_COMMENT_MARKER) ||
+          !isBotUser(comment.user?.login ?? null, comment.user?.type ?? '')
+        ) {
+          continue;
+        }
+
+        if (!existingComment || comment.id > existingComment.id) {
+          existingComment = {
+            id: comment.id,
+            body: comment.body
+          };
+        }
+      }
+
+      if (!existingComment) {
+        await octokit.rest.issues.createComment({
+          owner,
+          repo,
+          issue_number: pullNumber,
+          body: normalizedBody
+        });
+        return;
+      }
+
+      if (existingComment.body === normalizedBody) {
+        return;
+      }
+
+      await octokit.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: existingComment.id,
+        body: normalizedBody
+      });
     }
   };
 };

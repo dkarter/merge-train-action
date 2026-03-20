@@ -41,7 +41,8 @@ const createClient = (): MergeTrainGitHubClient => ({
   getCombinedStatusContexts: vi.fn(),
   getCheckRuns: vi.fn(),
   rerunCheckRuns: vi.fn(),
-  mergePullRequest: vi.fn()
+  mergePullRequest: vi.fn(),
+  upsertMergeTrainStatusComment: vi.fn()
 });
 
 describe('runMergeTrain', () => {
@@ -126,6 +127,81 @@ describe('runMergeTrain', () => {
     expect(result.message).toBe(
       'Merged: pull request #9 merged after required checks succeeded.'
     );
+  });
+
+  it('updates the same lifecycle status comment through merge transitions', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'behind',
+          headSha: 'sha-behind'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'clean',
+          headSha: 'sha-updated'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'clean',
+          headSha: 'sha-updated'
+        })
+      );
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: true,
+      updated: true
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+
+    await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    const lifecycleBodies = vi
+      .mocked(githubClient.upsertMergeTrainStatusComment)
+      .mock.calls.map((call) => call[0].body);
+
+    expect(
+      lifecycleBodies.some((body) => body.includes('Progress context'))
+    ).toBe(true);
+    expect(
+      lifecycleBodies.some((body) =>
+        body.includes('Current phase: **Updating / rebasing branch**')
+      )
+    ).toBe(true);
+    expect(
+      lifecycleBodies.some((body) =>
+        body.includes('Current phase: **Waiting for CI / required checks**')
+      )
+    ).toBe(true);
+    expect(
+      lifecycleBodies.some((body) =>
+        body.includes('Current phase: **Merging**')
+      )
+    ).toBe(true);
+    expect(
+      lifecycleBodies.some((body) => body.includes('Current phase: **Merged**'))
+    ).toBe(true);
   });
 
   it('returns no-op when update branch is unavailable and pull request stays unmergeable', async () => {
@@ -217,6 +293,11 @@ describe('runMergeTrain', () => {
       'Blocked: required checks failing [ci/test] (rerun disabled).'
     );
     expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
+    expect(githubClient.upsertMergeTrainStatusComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('Current phase: **Blocked**')
+      })
+    );
   });
 
   it('blocks merge when merge API rejects merge attempt', async () => {

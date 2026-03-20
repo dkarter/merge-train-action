@@ -39,6 +39,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
       checks: write
       statuses: read
     steps:
@@ -68,6 +69,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
       checks: write
       statuses: read
     steps:
@@ -123,6 +125,43 @@ Deterministic behavior:
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.
+
+### PR status comment lifecycle
+
+For every eligible run, the action creates or updates a single bot comment on the PR and reuses it across reruns. The comment explicitly names the target base branch and tracks merge-train progress.
+
+Sample comment format:
+
+```markdown
+## Merge Train Status: Waiting for CI / required checks
+
+Pull request #42 is in the merge train for base branch `main`.
+This PR will be automatically updated/rebased as needed and merged when the required checks are green.
+
+<details>
+<summary>Progress context</summary>
+
+- Target base branch: `main`
+- Merge-train label: `ready-to-merge`
+- Current phase: **Waiting for CI / required checks**
+- Current context: Waiting for required checks on `abc123` for base branch `main`.
+
+### Lifecycle
+
+- [x] Waiting for CI / required checks
+- [ ] Updating / rebasing branch
+- [ ] Merging
+- [ ] Merged
+</details>
+```
+
+The same comment is updated as the run transitions through:
+
+- Waiting for CI/required checks
+- Updating/rebasing branch
+- Merging
+- Merged
+- Blocked (for example, failed required checks)
 
 ## Troubleshooting
 
@@ -188,6 +227,7 @@ Use the minimum job permissions below for this action:
 
 - `contents: write` to create the merge commit when GitHub accepts merge.
 - `pull-requests: write` to read PR state, update branch, and call merge API.
+- `issues: write` to create/update the PR status lifecycle comment.
 - `checks: write` when `rerun-failed-checks` is enabled (default) so the action can request one failed-check rerun.
 - `checks: read` is sufficient only when `rerun-failed-checks: 'false'`.
 - `statuses: read` to evaluate required status contexts.

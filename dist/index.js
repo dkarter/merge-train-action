@@ -30008,6 +30008,92 @@ const sleep = async (milliseconds) => {
 };
 const createGitHubClient = (token) => {
     const octokit = github.getOctokit(token);
+    const inFlightCommentUpserts = new Map();
+    const listIssueComments = async ({ owner, repo, pullNumber }) => {
+        const comments = [];
+        let page = 1;
+        let hasMoreComments = true;
+        while (hasMoreComments) {
+            const response = await octokit.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100,
+                page
+            });
+            for (const comment of response.data) {
+                if (typeof comment.id !== 'number' ||
+                    typeof comment.body !== 'string') {
+                    continue;
+                }
+                comments.push({
+                    id: comment.id,
+                    body: comment.body
+                });
+            }
+            hasMoreComments = response.data.length === 100;
+            page += 1;
+        }
+        return comments;
+    };
+    const selectMarkedStatusComments = (comments) => {
+        return comments
+            .filter((comment) => comment.body.includes(STATUS_COMMENT_MARKER))
+            .sort((left, right) => left.id - right.id);
+    };
+    const cleanupDuplicateStatusComments = async ({ owner, repo, authoritativeCommentId, statusComments }) => {
+        for (const statusComment of statusComments) {
+            if (statusComment.id === authoritativeCommentId) {
+                continue;
+            }
+            try {
+                await octokit.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: statusComment.id
+                });
+            }
+            catch (error) {
+                if (typeof error === 'object' &&
+                    error !== null &&
+                    'status' in error &&
+                    error.status === 404) {
+                    continue;
+                }
+                throw error;
+            }
+        }
+    };
+    const updateStatusCommentById = async ({ owner, repo, commentId, body }) => {
+        await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: commentId,
+            body
+        });
+    };
+    const reconcileStatusComments = async ({ owner, repo, pullNumber, normalizedBody }) => {
+        const statusComments = selectMarkedStatusComments(await listIssueComments({ owner, repo, pullNumber }));
+        const authoritativeComment = statusComments[0];
+        if (!authoritativeComment) {
+            return null;
+        }
+        if (authoritativeComment.body !== normalizedBody) {
+            await updateStatusCommentById({
+                owner,
+                repo,
+                commentId: authoritativeComment.id,
+                body: normalizedBody
+            });
+        }
+        await cleanupDuplicateStatusComments({
+            owner,
+            repo,
+            authoritativeCommentId: authoritativeComment.id,
+            statusComments
+        });
+        return authoritativeComment.id;
+    };
     return {
         getPullRequest: async ({ owner, repo, pullNumber }) => {
             const response = await octokit.rest.pulls.get({
@@ -30236,71 +30322,100 @@ const createGitHubClient = (token) => {
             }
         },
         upsertMergeTrainStatusComment: async ({ owner, repo, pullNumber, body, commentId }) => {
-            const normalizedBody = withStatusCommentMarker(body);
-            if (typeof commentId === 'number' && Number.isInteger(commentId)) {
-                for (let attempt = 0; attempt < 3; attempt += 1) {
-                    try {
-                        await octokit.rest.issues.updateComment({
+            const key = `${owner}/${repo}#${pullNumber}`;
+            const previous = inFlightCommentUpserts.get(key);
+            if (previous) {
+                await previous.catch(() => undefined);
+            }
+            const upsertPromise = (async () => {
+                const normalizedBody = withStatusCommentMarker(body);
+                if (typeof commentId === 'number' && Number.isInteger(commentId)) {
+                    for (let attempt = 0; attempt < 3; attempt += 1) {
+                        try {
+                            await updateStatusCommentById({
+                                owner,
+                                repo,
+                                commentId,
+                                body: normalizedBody
+                            });
+                            const reconciledCommentId = await reconcileStatusComments({
+                                owner,
+                                repo,
+                                pullNumber,
+                                normalizedBody
+                            });
+                            return reconciledCommentId ?? commentId;
+                        }
+                        catch (error) {
+                            if (typeof error === 'object' &&
+                                error !== null &&
+                                'status' in error &&
+                                error.status === 404) {
+                                if (attempt < 2) {
+                                    await sleep(250);
+                                    continue;
+                                }
+                                return commentId;
+                            }
+                            throw error;
+                        }
+                    }
+                }
+                const statusComments = selectMarkedStatusComments(await listIssueComments({ owner, repo, pullNumber }));
+                let authoritativeComment = statusComments[0];
+                if (!authoritativeComment) {
+                    const createResponse = await octokit.rest.issues.createComment({
+                        owner,
+                        repo,
+                        issue_number: pullNumber,
+                        body: normalizedBody
+                    });
+                    const refreshedStatusComments = selectMarkedStatusComments(await listIssueComments({ owner, repo, pullNumber }));
+                    authoritativeComment = refreshedStatusComments[0] ?? {
+                        id: createResponse.data.id,
+                        body: normalizedBody
+                    };
+                    await cleanupDuplicateStatusComments({
+                        owner,
+                        repo,
+                        authoritativeCommentId: authoritativeComment.id,
+                        statusComments: refreshedStatusComments
+                    });
+                    if (authoritativeComment.body !== normalizedBody) {
+                        await updateStatusCommentById({
                             owner,
                             repo,
-                            comment_id: commentId,
+                            commentId: authoritativeComment.id,
                             body: normalizedBody
                         });
-                        return commentId;
                     }
-                    catch (error) {
-                        if (typeof error === 'object' &&
-                            error !== null &&
-                            'status' in error &&
-                            error.status === 404) {
-                            if (attempt < 2) {
-                                await sleep(250);
-                                continue;
-                            }
-                            return commentId;
-                        }
-                        throw error;
-                    }
+                    return authoritativeComment.id;
                 }
-            }
-            const response = await octokit.rest.issues.listComments({
-                owner,
-                repo,
-                issue_number: pullNumber,
-                per_page: 100
-            });
-            let existingComment;
-            for (const comment of response.data) {
-                if (typeof comment.body !== 'string' ||
-                    !comment.body.includes(STATUS_COMMENT_MARKER)) {
-                    continue;
+                if (authoritativeComment.body !== normalizedBody) {
+                    await updateStatusCommentById({
+                        owner,
+                        repo,
+                        commentId: authoritativeComment.id,
+                        body: normalizedBody
+                    });
                 }
-                if (!existingComment || comment.id > existingComment.id) {
-                    existingComment = {
-                        id: comment.id,
-                        body: comment.body
-                    };
-                }
-            }
-            if (!existingComment) {
-                const createResponse = await octokit.rest.issues.createComment({
+                await cleanupDuplicateStatusComments({
                     owner,
                     repo,
-                    issue_number: pullNumber,
-                    body: normalizedBody
+                    authoritativeCommentId: authoritativeComment.id,
+                    statusComments
                 });
-                return createResponse.data.id;
+                return authoritativeComment.id;
+            })();
+            inFlightCommentUpserts.set(key, upsertPromise);
+            try {
+                return await upsertPromise;
             }
-            if (existingComment.body === normalizedBody) {
-                return existingComment.id;
+            finally {
+                if (inFlightCommentUpserts.get(key) === upsertPromise) {
+                    inFlightCommentUpserts.delete(key);
+                }
             }
-            await octokit.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existingComment.id,
-                body: normalizedBody
-            });
-            return existingComment.id;
         }
     };
 };

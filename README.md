@@ -88,6 +88,7 @@ jobs:
           trust-min-author-association: '' # optional
           trust-author-allowlist: '' # optional CSV of trusted logins
           trust-require-approved-review: 'false' # optional, defaults to false
+          auto-delete-source-branch: 'false' # optional, defaults to false
 ```
 
 ### Pause and resume controls
@@ -149,6 +150,7 @@ For eligible pull requests the action orchestrates:
 4. Poll required status contexts and check runs until success/failure/timeout.
 5. If required check-runs fail and rerun is enabled, request one rerun attempt.
 6. Merge only when checks are green and PR is mergeable.
+7. Optionally delete the PR source branch after merge when `auto-delete-source-branch: 'true'`.
 
 Deterministic behavior:
 
@@ -159,6 +161,7 @@ Deterministic behavior:
 - Failed checks trigger at most one rerun attempt when `rerun-failed-checks` is enabled.
 - Action returns `blocked` with failing check names if checks are still failing.
 - Action returns `blocked` when trust-policy gates fail and includes the reason in the lifecycle comment.
+- When `auto-delete-source-branch: 'true'`, merged runs update status comment with branch deletion state (`deleted`, `skipped`, or `failed`) and reason.
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.
@@ -205,6 +208,12 @@ The same comment is updated as the run transitions through:
 - Merging
 - Merged
 - Blocked (for example, failed required checks)
+
+When `auto-delete-source-branch` is enabled, the merged phase also records source-branch deletion lifecycle updates:
+
+- Planned deletion announcement after merge.
+- Deletion start announcement before API delete call.
+- Final branch deletion state: `deleted successfully`, `skipped (reason)`, or `failed (reason)`.
 
 ## Troubleshooting
 
@@ -287,6 +296,13 @@ Use the minimum job permissions below for this action:
 - `checks: write` when `rerun-failed-checks` is enabled (default) so the action can request one failed-check rerun.
 - `checks: read` is sufficient only when `rerun-failed-checks: 'false'`.
 - `statuses: read` to evaluate required status contexts.
+
+Branch auto-delete caveats (`auto-delete-source-branch: 'true'`):
+
+- Deletion is attempted only for same-repository PR heads (fork branches are skipped).
+- Deletion is skipped when the head ref no longer exists.
+- Deletion is skipped when token repository permissions do not include push/admin/maintain.
+- Deletion can still fail (for example, protected/default branch restrictions); failure reason is written to the PR status comment.
 
 Token guidance:
 

@@ -15,6 +15,7 @@ const buildPullRequestState = (
   mergeable: true,
   mergeableState: 'clean',
   headSha: 'sha-1',
+  headRef: 'feature/rms-61',
   baseRef: 'main',
   labels: ['ready-to-merge'],
   authorLogin: 'octocat',
@@ -47,6 +48,9 @@ const createClient = (): MergeTrainGitHubClient => ({
   getCheckRuns: vi.fn(),
   rerunCheckRuns: vi.fn(),
   mergePullRequest: vi.fn(),
+  canDeleteBranch: vi.fn(),
+  branchExists: vi.fn(),
+  deleteBranch: vi.fn(),
   upsertMergeTrainStatusComment: vi.fn().mockResolvedValue(1)
 });
 
@@ -413,6 +417,196 @@ describe('runMergeTrain', () => {
       checkRunIds: [101]
     });
     expect(result.status).toBe('merged');
+  });
+
+  it('deletes source branch after merge when auto-delete is enabled and safe', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          headSha: 'sha-1',
+          headRef: 'feature/delete-me'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          headSha: 'sha-1',
+          headRef: 'feature/delete-me'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          headSha: 'sha-1',
+          headRef: 'feature/delete-me'
+        })
+      );
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+    vi.mocked(githubClient.canDeleteBranch).mockResolvedValue({
+      allowed: true
+    });
+    vi.mocked(githubClient.branchExists).mockResolvedValue(true);
+    vi.mocked(githubClient.deleteBranch).mockResolvedValue({ deleted: true });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      autoDeleteSourceBranch: true,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('merged');
+    expect(githubClient.canDeleteBranch).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action'
+    });
+    expect(githubClient.branchExists).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      branch: 'feature/delete-me'
+    });
+    expect(githubClient.deleteBranch).toHaveBeenCalledWith({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      branch: 'feature/delete-me'
+    });
+    expect(result.logs).toContain(
+      'Transition: Source branch deletion state: deleted successfully (`feature/delete-me`).'
+    );
+    expect(githubClient.upsertMergeTrainStatusComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining(
+          'Source branch deletion state: deleted successfully (`feature/delete-me`).'
+        )
+      })
+    );
+  });
+
+  it('skips source branch delete when token cannot delete branches', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+    vi.mocked(githubClient.canDeleteBranch).mockResolvedValue({
+      allowed: false,
+      reason: 'token cannot delete refs'
+    });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      autoDeleteSourceBranch: true,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('merged');
+    expect(githubClient.branchExists).not.toHaveBeenCalled();
+    expect(githubClient.deleteBranch).not.toHaveBeenCalled();
+    expect(result.logs).toContain(
+      'Transition: Source branch deletion state: skipped (token cannot delete refs)'
+    );
+    expect(githubClient.upsertMergeTrainStatusComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining(
+          'Source branch deletion state: skipped (token cannot delete refs)'
+        )
+      })
+    );
+  });
+
+  it('marks source branch delete failed when GitHub rejects deletion', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }))
+      .mockResolvedValueOnce(buildPullRequestState({ headSha: 'sha-1' }));
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+    vi.mocked(githubClient.canDeleteBranch).mockResolvedValue({
+      allowed: true
+    });
+    vi.mocked(githubClient.branchExists).mockResolvedValue(true);
+    vi.mocked(githubClient.deleteBranch).mockResolvedValue({
+      deleted: false,
+      reason: '422:Reference cannot be deleted'
+    });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      autoDeleteSourceBranch: true,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('merged');
+    expect(githubClient.deleteBranch).toHaveBeenCalledTimes(1);
+    expect(result.logs).toContain(
+      'Transition: Source branch deletion state: failed (422:Reference cannot be deleted)'
+    );
+    expect(githubClient.upsertMergeTrainStatusComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining(
+          'Source branch deletion state: failed (422:Reference cannot be deleted)'
+        )
+      })
+    );
   });
 
   it('blocks with diagnostics when checks still fail after one-time rerun', async () => {

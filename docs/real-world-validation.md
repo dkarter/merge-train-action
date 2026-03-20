@@ -55,3 +55,68 @@ Date: 2026-03-20
 ## Notes
 
 - Scenario 3 is blocked on `@main` until this defect fix is released from this repository.
+
+---
+
+# RMS-61 Real-World Validation
+
+Date: 2026-03-20
+
+## Feature: Auto-delete source branch after merge
+
+### Implementation Summary
+
+Added new action input `auto-delete-source-branch` (default: `false`) that, when enabled:
+
+1. After successful merge, announces planned deletion in status comment
+2. Performs safety checks before deletion:
+   - Same-repository branch (not fork)
+   - Branch still exists
+   - Token has permission (push/admin/maintain)
+3. Announces deletion start in status comment
+4. Attempts deletion via GitHub `deleteRef` API
+5. Updates status comment with final state: `deleted successfully`, `skipped (reason)`, or `failed (reason)`
+
+### Files Changed
+
+- `action.yml`: Added `auto-delete-source-branch` input
+- `src/main.ts`: Added input parsing and pass-through
+- `src/merge-train.ts`: Added branch deletion workflow with status comment lifecycle
+- `src/github-client.ts`: Added `canDeleteBranch`, `branchExists`, `deleteBranch` methods
+- `test/main.test.ts`: Added test for input passthrough
+- `test/merge-train.test.ts`: Added 3 tests: success, skipped (permission), failed (API error)
+- `README.md`: Added documentation with security caveats
+
+### Security Caveats (documented in README)
+
+- Deletion is attempted only for same-repository PR heads (fork branches are skipped)
+- Deletion is skipped when the head ref no longer exists
+- Deletion is skipped when token repository permissions do not include push/admin/maintain
+- Deletion can still fail (e.g., protected/default branch restrictions); failure reason is written to PR status comment
+
+### Sandbox Validation Steps
+
+To validate in sandbox:
+
+1. Update `.github/workflows/merge-train.yml` in `dkarter/merge-train-sandbox` to use this branch:
+   ```yaml
+   uses: dkarter/merge-train-action@rms-61-auto-delete
+   ```
+2. Add `auto-delete-source-branch: 'true'` input to the workflow
+3. Create a test PR with a fresh branch (e.g., `test/rms-61-delete`)
+4. Apply the merge-train label (`ready-to-merge`)
+5. Wait for merge to complete
+6. Verify status comment shows:
+   - "Source branch auto-delete is enabled; planning deletion for `test/rms-61-delete`."
+   - "Source branch deletion is starting for `test/rms-61-delete`."
+   - "Source branch deletion state: deleted successfully (`test/rms-61-delete`)."
+7. Verify branch is deleted in repo branches list
+
+### Test Evidence
+
+Unit tests verify:
+
+- Branch deletion succeeds when all safety checks pass
+- Deletion is skipped when token lacks permission
+- Deletion fails gracefully when GitHub API rejects the delete
+- Status comment is updated at each lifecycle phase

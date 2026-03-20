@@ -42,6 +42,7 @@ export type PullRequestState = {
   mergeable: boolean | null;
   mergeableState: string | null;
   headSha: string;
+  headRef: string;
   baseRef: string;
   labels: string[];
   authorLogin: string | null;
@@ -113,6 +114,23 @@ export type MergeTrainGitHubClient = {
     pullNumber: number;
     sha: string;
   }) => Promise<MergeResult>;
+  canDeleteBranch: (params: { owner: string; repo: string }) => Promise<{
+    allowed: boolean;
+    reason?: string;
+  }>;
+  branchExists: (params: {
+    owner: string;
+    repo: string;
+    branch: string;
+  }) => Promise<boolean>;
+  deleteBranch: (params: {
+    owner: string;
+    repo: string;
+    branch: string;
+  }) => Promise<{
+    deleted: boolean;
+    reason?: string;
+  }>;
   upsertMergeTrainStatusComment: (params: {
     owner: string;
     repo: string;
@@ -135,6 +153,7 @@ type MergeTrainParams = {
   trustMinAuthorAssociation?: string;
   trustAuthorAllowlist?: string[];
   trustRequireApprovedReview?: boolean;
+  autoDeleteSourceBranch?: boolean;
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
@@ -524,6 +543,7 @@ export const runMergeTrain = async ({
   trustMinAuthorAssociation,
   trustAuthorAllowlist = [],
   trustRequireApprovedReview = false,
+  autoDeleteSourceBranch = false,
   sleep = defaultSleep
 }: MergeTrainParams): Promise<MergeTrainResult> => {
   const webhookPayload = payload as {
@@ -1004,10 +1024,88 @@ export const runMergeTrain = async ({
       }
 
       const mergedMessage = `Merged: pull request #${pullNumber} merged after required checks succeeded.`;
-      await upsertStatusComment(
-        'merged',
-        `Merged into \`${refreshedPullRequest.baseRef}\` after required checks succeeded.`
-      );
+      const mergedContext = `Merged into \`${refreshedPullRequest.baseRef}\` after required checks succeeded.`;
+      await upsertStatusComment('merged', mergedContext);
+
+      if (autoDeleteSourceBranch) {
+        const plannedContext = `${mergedContext} Source branch auto-delete is enabled; planning deletion for \`${refreshedPullRequest.headRef}\`.`;
+        await upsertStatusComment('merged', plannedContext);
+
+        let deletionState: 'deleted' | 'skipped' | 'failed' = 'skipped';
+        let deletionReason = '';
+
+        if (!refreshedPullRequest.headRef) {
+          deletionState = 'skipped';
+          deletionReason =
+            'head branch name is unavailable in pull request payload.';
+        } else if (
+          !refreshedPullRequest.baseRepositoryFullName ||
+          !refreshedPullRequest.headRepositoryFullName
+        ) {
+          deletionState = 'skipped';
+          deletionReason =
+            'repository provenance data is unavailable; cannot verify same-repository branch ownership.';
+        } else if (
+          refreshedPullRequest.baseRepositoryFullName.toLowerCase() !==
+          refreshedPullRequest.headRepositoryFullName.toLowerCase()
+        ) {
+          deletionState = 'skipped';
+          deletionReason = `head repository '${refreshedPullRequest.headRepositoryFullName}' differs from base repository '${refreshedPullRequest.baseRepositoryFullName}'.`;
+        } else {
+          const deletePermission = await githubClient.canDeleteBranch({
+            owner,
+            repo
+          });
+          if (!deletePermission.allowed) {
+            deletionState = 'skipped';
+            deletionReason =
+              deletePermission.reason ??
+              'token does not have permission to delete repository branches.';
+          } else {
+            const branchExists = await githubClient.branchExists({
+              owner,
+              repo,
+              branch: refreshedPullRequest.headRef
+            });
+
+            if (!branchExists) {
+              deletionState = 'skipped';
+              deletionReason = `branch \`${refreshedPullRequest.headRef}\` no longer exists.`;
+            } else {
+              await upsertStatusComment(
+                'merged',
+                `${mergedContext} Source branch deletion is starting for \`${refreshedPullRequest.headRef}\`.`
+              );
+              const deleteResult = await githubClient.deleteBranch({
+                owner,
+                repo,
+                branch: refreshedPullRequest.headRef
+              });
+
+              if (deleteResult.deleted) {
+                deletionState = 'deleted';
+              } else {
+                deletionState = 'failed';
+                deletionReason =
+                  deleteResult.reason ??
+                  'unknown deletion error from GitHub API.';
+              }
+            }
+          }
+        }
+
+        const deletionSummary =
+          deletionState === 'deleted'
+            ? `Source branch deletion state: deleted successfully (\`${refreshedPullRequest.headRef}\`).`
+            : `Source branch deletion state: ${deletionState} (${deletionReason})`;
+
+        await upsertStatusComment(
+          'merged',
+          `${mergedContext} ${deletionSummary}`
+        );
+        logs.push(`Transition: ${deletionSummary}`);
+      }
+
       logs.push(`Transition: ${mergedMessage}`);
       return {
         eligible: true,

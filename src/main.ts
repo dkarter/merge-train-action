@@ -21,6 +21,7 @@ const INPUT_TRUST_SAME_REPO_ONLY = 'trust-same-repo-only';
 const INPUT_TRUST_MIN_AUTHOR_ASSOCIATION = 'trust-min-author-association';
 const INPUT_TRUST_AUTHOR_ALLOWLIST = 'trust-author-allowlist';
 const INPUT_TRUST_REQUIRE_APPROVED_REVIEW = 'trust-require-approved-review';
+const INPUT_AUTO_DELETE_SOURCE_BRANCH = 'auto-delete-source-branch';
 
 const toBoolean = (value: string, fallback: boolean): boolean => {
   const normalized = value.trim().toLowerCase();
@@ -104,6 +105,10 @@ export const run = async (): Promise<void> => {
       core.getInput(INPUT_TRUST_REQUIRE_APPROVED_REVIEW) || '',
       false
     );
+    const autoDeleteSourceBranch = toBoolean(
+      core.getInput(INPUT_AUTO_DELETE_SOURCE_BRANCH) || '',
+      false
+    );
     const token = core.getInput(INPUT_TOKEN);
     if (!token) {
       throw new Error('Missing GitHub token. Set required input token.');
@@ -125,7 +130,8 @@ export const run = async (): Promise<void> => {
       trustSameRepoOnly,
       trustMinAuthorAssociation,
       trustAuthorAllowlist,
-      trustRequireApprovedReview
+      trustRequireApprovedReview,
+      autoDeleteSourceBranch
     });
 
     for (const logEntry of result.logs) {

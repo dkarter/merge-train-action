@@ -69,6 +69,7 @@ const buildRunMergeTrainArgs = (overrides: Record<string, unknown> = {}) => ({
   trustMinAuthorAssociation: '',
   trustRequireApprovedReview: false,
   trustSameRepoOnly: true,
+  autoDeleteSourceBranch: false,
   waitTimeoutSeconds: 600,
   ...overrides
 });
@@ -90,7 +91,11 @@ const expectDefaultInputCalls = (): void => {
     10,
     'trust-require-approved-review'
   );
-  expect(mocked.getInput).toHaveBeenNthCalledWith(11, 'token');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(
+    11,
+    'auto-delete-source-branch'
+  );
+  expect(mocked.getInput).toHaveBeenNthCalledWith(12, 'token');
 };
 
 describe('run', () => {
@@ -265,6 +270,25 @@ describe('run', () => {
         trustMinAuthorAssociation: 'member',
         trustAuthorAllowlist: ['octocat', 'hubot'],
         trustRequireApprovedReview: true
+      })
+    );
+  });
+
+  it('passes branch auto-delete toggle through to merge train', async () => {
+    mockInputs({ 'auto-delete-source-branch': 'yes' });
+    mocked.runMergeTrain.mockResolvedValue({
+      eligible: true,
+      status: 'noop',
+      labelName: 'ready-to-merge',
+      message: "No-op: pull request #9 is 'closed', not open.",
+      logs: []
+    });
+
+    await run();
+
+    expect(mocked.runMergeTrain).toHaveBeenCalledWith(
+      buildRunMergeTrainArgs({
+        autoDeleteSourceBranch: true
       })
     );
   });

@@ -45,6 +45,10 @@ inputs:
     description: Require GitHub review decision to be APPROVED before merge-train execution.
     required: false
     default: 'false'
+  auto-delete-source-branch:
+    description: Attempt to delete the merged pull request source branch after merge when safe checks pass (same repository, branch exists, and token can delete refs).
+    required: false
+    default: 'false'
 outputs:
   label-name:
     description: Label value used by the action run.

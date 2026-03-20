@@ -250,6 +250,7 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
             : null,
         mergeableState: response.data.mergeable_state ?? null,
         headSha: response.data.head.sha,
+        headRef: response.data.head.ref,
         baseRef: response.data.base.ref,
         labels: extractLabelNames(response.data.labels),
         authorLogin: response.data.user?.login ?? null,
@@ -501,6 +502,94 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
           return {
             merged: false,
             message: `${error.status}:${error.message}`
+          };
+        }
+
+        throw error;
+      }
+    },
+
+    canDeleteBranch: async ({ owner, repo }) => {
+      try {
+        const response = await octokit.rest.repos.get({
+          owner,
+          repo
+        });
+        const permissions = response.data.permissions;
+        const allowed = Boolean(
+          permissions?.admin || permissions?.maintain || permissions?.push
+        );
+
+        if (!allowed) {
+          return {
+            allowed: false,
+            reason:
+              'token is missing repository push/admin permission required for branch deletion.'
+          };
+        }
+
+        return { allowed: true };
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          typeof error.status === 'number' &&
+          'message' in error &&
+          typeof error.message === 'string'
+        ) {
+          return {
+            allowed: false,
+            reason: `unable to verify token repository permissions (${error.status}:${error.message}).`
+          };
+        }
+
+        throw error;
+      }
+    },
+
+    branchExists: async ({ owner, repo, branch }) => {
+      try {
+        await octokit.rest.git.getRef({
+          owner,
+          repo,
+          ref: `heads/${branch}`
+        });
+        return true;
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          error.status === 404
+        ) {
+          return false;
+        }
+
+        throw error;
+      }
+    },
+
+    deleteBranch: async ({ owner, repo, branch }) => {
+      try {
+        await octokit.rest.git.deleteRef({
+          owner,
+          repo,
+          ref: `heads/${branch}`
+        });
+        return { deleted: true };
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          typeof error.status === 'number' &&
+          'message' in error &&
+          typeof error.message === 'string'
+        ) {
+          return {
+            deleted: false,
+            reason: `${error.status}:${error.message}`
           };
         }
 

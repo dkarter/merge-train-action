@@ -88,8 +88,9 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
   }): Promise<IssueComment[]> => {
     const comments: IssueComment[] = [];
     let page = 1;
+    let hasMoreComments = true;
 
-    while (true) {
+    while (hasMoreComments) {
       const response = await octokit.rest.issues.listComments({
         owner,
         repo,
@@ -112,12 +113,11 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
         });
       }
 
-      if (response.data.length < 100) {
-        return comments;
-      }
-
+      hasMoreComments = response.data.length === 100;
       page += 1;
     }
+
+    return comments;
   };
 
   const selectMarkedStatusComments = (

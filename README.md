@@ -134,7 +134,13 @@ Required CI checks from this repository's `CI` workflow:
 - `build-dist`
 - `security`
 
-This set enforces linting, formatting, tests, action bundle + committed `dist/` freshness, and lightweight security scanning on every PR.
+This set enforces linting, formatting, tests, action bundle validation, and lightweight security scanning on every PR.
+
+`build-dist` validation details:
+
+- CI still runs `bun run package` to ensure bundling succeeds.
+- CI then runs `bun run dist:check`, which verifies required `dist/` artifacts exist, are non-empty, and packaging did not modify tracked files outside `dist/`.
+- We intentionally avoid strict byte-for-byte `git diff` checks for `dist/index.js` because `ncc` module-id numbering can vary across environments/reruns without changing runtime behavior.
 
 Security gate details:
 

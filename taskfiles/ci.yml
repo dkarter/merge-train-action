@@ -22,7 +22,7 @@ tasks:
       - bun run package
 
   dist:check:
-    desc: Verify committed dist output is up to date
+    desc: Verify dist artifacts and package side effects
     cmds:
       - bun run dist:check
 

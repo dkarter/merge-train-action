@@ -27,11 +27,13 @@ Equivalent task alias:
 task ci:all
 ```
 
-If source changes affect runtime behavior, refresh the action bundle and include updated `dist/` in your commit:
+If source changes affect runtime behavior, rebuild the action bundle:
 
 ```bash
 bun run package
 ```
+
+`bun run dist:check` is the required dist validation gate. It confirms bundle artifacts exist and are non-empty, and that packaging does not modify tracked files outside `dist/`. It intentionally does not require strict byte-for-byte equality in `dist/index.js`, because `ncc` module-id numbering can vary across environments without changing behavior.
 
 ## Automated Releases
 
@@ -50,7 +52,7 @@ When opening PRs, use conventional commit subjects so release-please can determi
 - Reviewers should explicitly confirm the quality/security checklist in the PR:
   - required CI checks pass (`lint`, `format`, `test`, `build-dist`, `security`)
   - security scan is clean (`bun run audit` and `bun run secrets:scan` / CI gitleaks job)
-  - `dist/` output is fresh for action runtime changes
+  - `dist` validation gate passes (`bun run package` + `bun run dist:check`)
 
 ## Agent Branch Commits
 

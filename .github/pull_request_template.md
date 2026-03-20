@@ -21,5 +21,5 @@ Describe what changed and why.
 
 - [ ] Required CI checks passed (`lint`, `format`, `test`, `build-dist`, `security`)
 - [ ] Security checks reviewed (`bun run audit` + gitleaks)
-- [ ] `dist/` output is intentionally updated (or unchanged)
+- [ ] `dist` validation gate is green (`bun run package` + `bun run dist:check`)
 - [ ] Change is safe to merge under branch protection rules

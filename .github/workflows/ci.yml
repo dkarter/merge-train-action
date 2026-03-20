@@ -96,8 +96,8 @@ jobs:
       - name: Build action bundle
         run: bun run package
 
-      - name: Verify committed dist output
-        run: git diff --exit-code -- dist/
+      - name: Verify dist validation gate
+        run: bun run dist:check
 
   security:
     runs-on: ubuntu-latest

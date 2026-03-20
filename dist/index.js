@@ -29997,20 +29997,103 @@ const parseWorkflowRunIdFromDetailsUrl = (detailsUrl) => {
     }
     return runId;
 };
-const isBotUser = (login, type) => {
-    if (type === 'Bot') {
-        return true;
-    }
-    return typeof login === 'string' && login.endsWith('[bot]');
-};
 const withStatusCommentMarker = (body) => {
     if (body.includes(STATUS_COMMENT_MARKER)) {
         return body;
     }
     return `${body}\n\n${STATUS_COMMENT_MARKER}`;
 };
+const sleep = async (milliseconds) => {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+};
 const createGitHubClient = (token) => {
     const octokit = github.getOctokit(token);
+    const inFlightCommentUpserts = new Map();
+    const listIssueComments = async ({ owner, repo, pullNumber }) => {
+        const comments = [];
+        let page = 1;
+        let hasMoreComments = true;
+        while (hasMoreComments) {
+            const response = await octokit.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100,
+                page
+            });
+            for (const comment of response.data) {
+                if (typeof comment.id !== 'number' ||
+                    typeof comment.body !== 'string') {
+                    continue;
+                }
+                comments.push({
+                    id: comment.id,
+                    body: comment.body
+                });
+            }
+            hasMoreComments = response.data.length === 100;
+            page += 1;
+        }
+        return comments;
+    };
+    const selectMarkedStatusComments = (comments) => {
+        return comments
+            .filter((comment) => comment.body.includes(STATUS_COMMENT_MARKER))
+            .sort((left, right) => left.id - right.id);
+    };
+    const cleanupDuplicateStatusComments = async ({ owner, repo, authoritativeCommentId, statusComments }) => {
+        for (const statusComment of statusComments) {
+            if (statusComment.id === authoritativeCommentId) {
+                continue;
+            }
+            try {
+                await octokit.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: statusComment.id
+                });
+            }
+            catch (error) {
+                if (typeof error === 'object' &&
+                    error !== null &&
+                    'status' in error &&
+                    error.status === 404) {
+                    continue;
+                }
+                throw error;
+            }
+        }
+    };
+    const updateStatusCommentById = async ({ owner, repo, commentId, body }) => {
+        await octokit.rest.issues.updateComment({
+            owner,
+            repo,
+            comment_id: commentId,
+            body
+        });
+    };
+    const reconcileStatusComments = async ({ owner, repo, pullNumber, normalizedBody }) => {
+        const statusComments = selectMarkedStatusComments(await listIssueComments({ owner, repo, pullNumber }));
+        const authoritativeComment = statusComments[0];
+        if (!authoritativeComment) {
+            return null;
+        }
+        if (authoritativeComment.body !== normalizedBody) {
+            await updateStatusCommentById({
+                owner,
+                repo,
+                commentId: authoritativeComment.id,
+                body: normalizedBody
+            });
+        }
+        await cleanupDuplicateStatusComments({
+            owner,
+            repo,
+            authoritativeCommentId: authoritativeComment.id,
+            statusComments
+        });
+        return authoritativeComment.id;
+    };
     return {
         getPullRequest: async ({ owner, repo, pullNumber }) => {
             const response = await octokit.rest.pulls.get({
@@ -30232,46 +30315,101 @@ const createGitHubClient = (token) => {
                 throw error;
             }
         },
-        upsertMergeTrainStatusComment: async ({ owner, repo, pullNumber, body }) => {
-            const normalizedBody = withStatusCommentMarker(body);
-            const response = await octokit.rest.issues.listComments({
-                owner,
-                repo,
-                issue_number: pullNumber,
-                per_page: 100
-            });
-            let existingComment;
-            for (const comment of response.data) {
-                if (typeof comment.body !== 'string' ||
-                    !comment.body.includes(STATUS_COMMENT_MARKER) ||
-                    !isBotUser(comment.user?.login ?? null, comment.user?.type ?? '')) {
-                    continue;
-                }
-                if (!existingComment || comment.id > existingComment.id) {
-                    existingComment = {
-                        id: comment.id,
-                        body: comment.body
-                    };
-                }
+        upsertMergeTrainStatusComment: async ({ owner, repo, pullNumber, body, commentId }) => {
+            const key = `${owner}/${repo}#${pullNumber}`;
+            const previous = inFlightCommentUpserts.get(key);
+            if (previous) {
+                await previous.catch(() => undefined);
             }
-            if (!existingComment) {
-                await octokit.rest.issues.createComment({
+            const upsertPromise = (async () => {
+                const normalizedBody = withStatusCommentMarker(body);
+                if (typeof commentId === 'number' && Number.isInteger(commentId)) {
+                    for (let attempt = 0; attempt < 3; attempt += 1) {
+                        try {
+                            await updateStatusCommentById({
+                                owner,
+                                repo,
+                                commentId,
+                                body: normalizedBody
+                            });
+                            const reconciledCommentId = await reconcileStatusComments({
+                                owner,
+                                repo,
+                                pullNumber,
+                                normalizedBody
+                            });
+                            return reconciledCommentId ?? commentId;
+                        }
+                        catch (error) {
+                            if (typeof error === 'object' &&
+                                error !== null &&
+                                'status' in error &&
+                                error.status === 404) {
+                                if (attempt < 2) {
+                                    await sleep(250);
+                                    continue;
+                                }
+                                return commentId;
+                            }
+                            throw error;
+                        }
+                    }
+                }
+                const statusComments = selectMarkedStatusComments(await listIssueComments({ owner, repo, pullNumber }));
+                let authoritativeComment = statusComments[0];
+                if (!authoritativeComment) {
+                    const createResponse = await octokit.rest.issues.createComment({
+                        owner,
+                        repo,
+                        issue_number: pullNumber,
+                        body: normalizedBody
+                    });
+                    const refreshedStatusComments = selectMarkedStatusComments(await listIssueComments({ owner, repo, pullNumber }));
+                    authoritativeComment = refreshedStatusComments[0] ?? {
+                        id: createResponse.data.id,
+                        body: normalizedBody
+                    };
+                    await cleanupDuplicateStatusComments({
+                        owner,
+                        repo,
+                        authoritativeCommentId: authoritativeComment.id,
+                        statusComments: refreshedStatusComments
+                    });
+                    if (authoritativeComment.body !== normalizedBody) {
+                        await updateStatusCommentById({
+                            owner,
+                            repo,
+                            commentId: authoritativeComment.id,
+                            body: normalizedBody
+                        });
+                    }
+                    return authoritativeComment.id;
+                }
+                if (authoritativeComment.body !== normalizedBody) {
+                    await updateStatusCommentById({
+                        owner,
+                        repo,
+                        commentId: authoritativeComment.id,
+                        body: normalizedBody
+                    });
+                }
+                await cleanupDuplicateStatusComments({
                     owner,
                     repo,
-                    issue_number: pullNumber,
-                    body: normalizedBody
+                    authoritativeCommentId: authoritativeComment.id,
+                    statusComments
                 });
-                return;
+                return authoritativeComment.id;
+            })();
+            inFlightCommentUpserts.set(key, upsertPromise);
+            try {
+                return await upsertPromise;
             }
-            if (existingComment.body === normalizedBody) {
-                return;
+            finally {
+                if (inFlightCommentUpserts.get(key) === upsertPromise) {
+                    inFlightCommentUpserts.delete(key);
+                }
             }
-            await octokit.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existingComment.id,
-                body: normalizedBody
-            });
         }
     };
 };
@@ -30654,6 +30792,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
     }
     let lastCommentPhase = null;
     let lastCommentContext = null;
+    let statusCommentId;
     const upsertStatusComment = async (phase, context) => {
         if (phase === lastCommentPhase && context === lastCommentContext) {
             return;
@@ -30665,11 +30804,12 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             phase,
             context
         });
-        await githubClient.upsertMergeTrainStatusComment({
+        statusCommentId = await githubClient.upsertMergeTrainStatusComment({
             owner,
             repo,
             pullNumber,
-            body: statusCommentBody
+            body: statusCommentBody,
+            commentId: statusCommentId
         });
         lastCommentPhase = phase;
         lastCommentContext = context;

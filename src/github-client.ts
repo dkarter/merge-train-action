@@ -34,6 +34,26 @@ const extractLabelNames = (
     .filter((label): label is string => Boolean(label && label.length > 0));
 };
 
+const parseWorkflowRunIdFromDetailsUrl = (
+  detailsUrl: string | null | undefined
+): number | null => {
+  if (typeof detailsUrl !== 'string') {
+    return null;
+  }
+
+  const match = detailsUrl.match(/\/actions\/runs\/(\d+)(?:\/|$)/);
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  const runId = Number.parseInt(match[1], 10);
+  if (!Number.isInteger(runId) || runId <= 0) {
+    return null;
+  }
+
+  return runId;
+};
+
 export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
   const octokit = github.getOctokit(token);
 
@@ -186,6 +206,7 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       const requestedCheckRunIds: number[] = [];
       const skippedCheckRuns: Array<{ checkRunId: number; reason: string }> =
         [];
+      const requestedWorkflowRunIds = new Set<number>();
 
       for (const checkRunId of checkRunIds) {
         try {
@@ -196,6 +217,55 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
           });
           requestedCheckRunIds.push(checkRunId);
         } catch (error) {
+          if (
+            typeof error === 'object' &&
+            error !== null &&
+            'status' in error &&
+            error.status === 422
+          ) {
+            try {
+              const checkRunResponse = await octokit.rest.checks.get({
+                owner,
+                repo,
+                check_run_id: checkRunId
+              });
+              const workflowRunId = parseWorkflowRunIdFromDetailsUrl(
+                checkRunResponse.data.details_url
+              );
+
+              if (workflowRunId) {
+                if (!requestedWorkflowRunIds.has(workflowRunId)) {
+                  await octokit.rest.actions.reRunWorkflowFailedJobs({
+                    owner,
+                    repo,
+                    run_id: workflowRunId
+                  });
+                  requestedWorkflowRunIds.add(workflowRunId);
+                }
+
+                requestedCheckRunIds.push(checkRunId);
+                continue;
+              }
+            } catch (fallbackError) {
+              if (
+                typeof fallbackError === 'object' &&
+                fallbackError !== null &&
+                'status' in fallbackError &&
+                typeof fallbackError.status === 'number' &&
+                'message' in fallbackError &&
+                typeof fallbackError.message === 'string'
+              ) {
+                skippedCheckRuns.push({
+                  checkRunId,
+                  reason: `${fallbackError.status}:${fallbackError.message}`
+                });
+                continue;
+              }
+
+              throw fallbackError;
+            }
+          }
+
           if (
             typeof error === 'object' &&
             error !== null &&

@@ -32,7 +32,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      checks: read
+      checks: write
       statuses: read
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      checks: read
+      checks: write
       statuses: read
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +106,9 @@ Use the minimum job permissions below for this action:
 
 - `contents: write` to create the merge commit when GitHub accepts merge.
 - `pull-requests: write` to read PR state, update branch, and call merge API.
-- `checks: read` and `statuses: read` to evaluate required checks.
+- `checks: write` when `rerun-failed-checks` is enabled (default) so the action can request one failed-check rerun.
+- `checks: read` is sufficient only when `rerun-failed-checks: 'false'`.
+- `statuses: read` to evaluate required status contexts.
 
 Safety guardrails in this action:
 

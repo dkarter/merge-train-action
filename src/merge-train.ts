@@ -347,6 +347,26 @@ const evaluateRequiredChecks = (params: {
   };
 };
 
+const hasPendingRequiredCheckActivity = (params: {
+  requiredContexts: string[];
+  statusContexts: Record<string, 'success' | 'failure' | 'pending'>;
+  checkRuns: Array<{
+    id: number;
+    name: string;
+    status: string;
+    conclusion: string | null;
+  }>;
+}): boolean =>
+  params.requiredContexts.some((requiredContext) => {
+    if (params.statusContexts[requiredContext] === 'pending') {
+      return true;
+    }
+
+    return params.checkRuns
+      .filter((checkRun) => checkRun.name === requiredContext)
+      .some((checkRun) => evaluateCheckRun(checkRun) === 'pending');
+  });
+
 const isNoopPullRequestState = (
   pullRequest: PullRequestState,
   labelName: string
@@ -493,6 +513,9 @@ export const runMergeTrain = async ({
   );
 
   let updateAttempted = false;
+  let updateExpectedHeadSha: string | null = null;
+  let observedUpdatedHeadAfterUpdateAttempt = false;
+  let observedPendingChecksOnUpdatedHead = false;
   if (pullRequest.mergeableState === 'behind') {
     await upsertStatusComment(
       'updating-branch',
@@ -507,6 +530,7 @@ export const runMergeTrain = async ({
       pullNumber,
       expectedHeadSha: pullRequest.headSha
     });
+    updateExpectedHeadSha = pullRequest.headSha;
     updateAttempted = updateResult.attempted;
 
     if (updateResult.updated) {
@@ -554,6 +578,8 @@ export const runMergeTrain = async ({
   const deadline = Date.now() + waitTimeoutSeconds * 1000;
   let latestOutcome: CheckOutcome = 'pending';
   let rerunAttempted = false;
+  let trackedHeadSha = pullRequest.headSha;
+  let lastLoggedCheckEvaluation: string | null = null;
 
   while (Date.now() <= deadline) {
     pullRequest = await githubClient.getPullRequest({
@@ -574,6 +600,26 @@ export const runMergeTrain = async ({
       };
     }
 
+    if (pullRequest.headSha !== trackedHeadSha) {
+      logs.push(
+        `Transition: tracking head SHA moved from '${trackedHeadSha}' to '${pullRequest.headSha}'; resetting required-check evaluation state.`
+      );
+      trackedHeadSha = pullRequest.headSha;
+      rerunAttempted = false;
+    }
+
+    if (
+      updateAttempted &&
+      updateExpectedHeadSha &&
+      pullRequest.headSha !== updateExpectedHeadSha &&
+      !observedUpdatedHeadAfterUpdateAttempt
+    ) {
+      observedUpdatedHeadAfterUpdateAttempt = true;
+      logs.push(
+        `Transition: update/rebase head advanced from '${updateExpectedHeadSha}' to '${pullRequest.headSha}'; tracking required checks on the new head.`
+      );
+    }
+
     const statusContexts = await githubClient.getCombinedStatusContexts({
       owner,
       repo,
@@ -590,6 +636,30 @@ export const runMergeTrain = async ({
       checkRuns
     });
     latestOutcome = checkEvaluation.overallOutcome;
+
+    const checkEvaluationSummary = `${pullRequest.headSha}:${latestOutcome}:${Object.keys(statusContexts).length}:${checkRuns.length}`;
+    if (checkEvaluationSummary !== lastLoggedCheckEvaluation) {
+      logs.push(
+        `Transition: required checks on '${pullRequest.headSha}' evaluated as '${latestOutcome}' (status contexts: ${Object.keys(statusContexts).length}, check-runs: ${checkRuns.length}).`
+      );
+      lastLoggedCheckEvaluation = checkEvaluationSummary;
+    }
+
+    if (
+      observedUpdatedHeadAfterUpdateAttempt &&
+      !observedPendingChecksOnUpdatedHead &&
+      latestOutcome === 'pending' &&
+      hasPendingRequiredCheckActivity({
+        requiredContexts,
+        statusContexts,
+        checkRuns
+      })
+    ) {
+      observedPendingChecksOnUpdatedHead = true;
+      logs.push(
+        `Transition: discovered pending required checks on updated head '${pullRequest.headSha}'; continuing to wait for completion.`
+      );
+    }
 
     if (latestOutcome === 'failure') {
       const failingChecks =
@@ -814,7 +884,7 @@ export const runMergeTrain = async ({
     await sleep(pollIntervalSeconds * 1000);
   }
 
-  if (updateAttempted) {
+  if (updateAttempted && !observedPendingChecksOnUpdatedHead) {
     const timeoutMessage =
       'Blocked: timed out while waiting for update/check completion after safe update attempt.';
     await upsertStatusComment(

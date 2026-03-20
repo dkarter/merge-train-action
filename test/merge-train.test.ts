@@ -584,6 +584,82 @@ describe('runMergeTrain', () => {
     expect(sleep).toHaveBeenCalled();
   });
 
+  it('tracks updated head checks and avoids stale update-timeout message', async () => {
+    const githubClient = createClient();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-03-20T00:00:00.000Z'));
+    const sleep = vi.fn(async (milliseconds: number) => {
+      vi.setSystemTime(Date.now() + milliseconds);
+    });
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'behind',
+          headSha: 'sha-before-update'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          mergeableState: 'clean',
+          headSha: 'sha-after-update'
+        })
+      );
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: true,
+      updated: true
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'pending'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([
+      {
+        id: 301,
+        name: 'ci/test',
+        status: 'in_progress',
+        conclusion: null
+      }
+    ]);
+
+    try {
+      const result = await runMergeTrain({
+        eventName: 'pull_request',
+        eventAction: 'synchronize',
+        labelName: 'ready-to-merge',
+        payload: basePayload,
+        githubClient,
+        waitTimeoutSeconds: 0,
+        pollIntervalSeconds: 1,
+        sleep
+      });
+
+      expect(githubClient.getCombinedStatusContexts).toHaveBeenCalledWith({
+        owner: 'acme',
+        repo: 'merge-train-action',
+        ref: 'sha-after-update'
+      });
+      expect(githubClient.getCheckRuns).toHaveBeenCalledWith({
+        owner: 'acme',
+        repo: 'merge-train-action',
+        ref: 'sha-after-update'
+      });
+      expect(result.status).toBe('blocked');
+      expect(result.message).toBe(
+        'Blocked: timed out while waiting for required checks to finish.'
+      );
+      expect(result.logs).toContain(
+        "Transition: update/rebase head advanced from 'sha-before-update' to 'sha-after-update'; tracking required checks on the new head."
+      );
+      expect(result.logs).toContain(
+        "Transition: discovered pending required checks on updated head 'sha-after-update'; continuing to wait for completion."
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns no-op when another run already merged the pull request', async () => {
     const githubClient = createClient();
     vi.mocked(githubClient.getPullRequest)

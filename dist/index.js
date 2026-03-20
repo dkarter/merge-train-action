@@ -29997,17 +29997,14 @@ const parseWorkflowRunIdFromDetailsUrl = (detailsUrl) => {
     }
     return runId;
 };
-const isBotUser = (login, type) => {
-    if (type === 'Bot') {
-        return true;
-    }
-    return typeof login === 'string' && login.endsWith('[bot]');
-};
 const withStatusCommentMarker = (body) => {
     if (body.includes(STATUS_COMMENT_MARKER)) {
         return body;
     }
     return `${body}\n\n${STATUS_COMMENT_MARKER}`;
+};
+const sleep = async (milliseconds) => {
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
 };
 const createGitHubClient = (token) => {
     const octokit = github.getOctokit(token);
@@ -30232,8 +30229,34 @@ const createGitHubClient = (token) => {
                 throw error;
             }
         },
-        upsertMergeTrainStatusComment: async ({ owner, repo, pullNumber, body }) => {
+        upsertMergeTrainStatusComment: async ({ owner, repo, pullNumber, body, commentId }) => {
             const normalizedBody = withStatusCommentMarker(body);
+            if (typeof commentId === 'number' && Number.isInteger(commentId)) {
+                for (let attempt = 0; attempt < 3; attempt += 1) {
+                    try {
+                        await octokit.rest.issues.updateComment({
+                            owner,
+                            repo,
+                            comment_id: commentId,
+                            body: normalizedBody
+                        });
+                        return commentId;
+                    }
+                    catch (error) {
+                        if (typeof error === 'object' &&
+                            error !== null &&
+                            'status' in error &&
+                            error.status === 404) {
+                            if (attempt < 2) {
+                                await sleep(250);
+                                continue;
+                            }
+                            return commentId;
+                        }
+                        throw error;
+                    }
+                }
+            }
             const response = await octokit.rest.issues.listComments({
                 owner,
                 repo,
@@ -30243,8 +30266,7 @@ const createGitHubClient = (token) => {
             let existingComment;
             for (const comment of response.data) {
                 if (typeof comment.body !== 'string' ||
-                    !comment.body.includes(STATUS_COMMENT_MARKER) ||
-                    !isBotUser(comment.user?.login ?? null, comment.user?.type ?? '')) {
+                    !comment.body.includes(STATUS_COMMENT_MARKER)) {
                     continue;
                 }
                 if (!existingComment || comment.id > existingComment.id) {
@@ -30255,16 +30277,16 @@ const createGitHubClient = (token) => {
                 }
             }
             if (!existingComment) {
-                await octokit.rest.issues.createComment({
+                const createResponse = await octokit.rest.issues.createComment({
                     owner,
                     repo,
                     issue_number: pullNumber,
                     body: normalizedBody
                 });
-                return;
+                return createResponse.data.id;
             }
             if (existingComment.body === normalizedBody) {
-                return;
+                return existingComment.id;
             }
             await octokit.rest.issues.updateComment({
                 owner,
@@ -30272,6 +30294,7 @@ const createGitHubClient = (token) => {
                 comment_id: existingComment.id,
                 body: normalizedBody
             });
+            return existingComment.id;
         }
     };
 };
@@ -30575,6 +30598,14 @@ const evaluateRequiredChecks = (params) => {
             .map((contextOutcome) => contextOutcome.requiredContext)
     };
 };
+const hasPendingRequiredCheckActivity = (params) => params.requiredContexts.some((requiredContext) => {
+    if (params.statusContexts[requiredContext] === 'pending') {
+        return true;
+    }
+    return params.checkRuns
+        .filter((checkRun) => checkRun.name === requiredContext)
+        .some((checkRun) => evaluateCheckRun(checkRun) === 'pending');
+});
 const isNoopPullRequestState = (pullRequest, labelName) => {
     if (pullRequest.merged) {
         return `No-op: pull request #${pullRequest.number} is already merged.`;
@@ -30654,6 +30685,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
     }
     let lastCommentPhase = null;
     let lastCommentContext = null;
+    let statusCommentId;
     const upsertStatusComment = async (phase, context) => {
         if (phase === lastCommentPhase && context === lastCommentContext) {
             return;
@@ -30665,11 +30697,12 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             phase,
             context
         });
-        await githubClient.upsertMergeTrainStatusComment({
+        statusCommentId = await githubClient.upsertMergeTrainStatusComment({
             owner,
             repo,
             pullNumber,
-            body: statusCommentBody
+            body: statusCommentBody,
+            commentId: statusCommentId
         });
         lastCommentPhase = phase;
         lastCommentContext = context;
@@ -30677,6 +30710,9 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
     };
     await upsertStatusComment('waiting-checks', `Queued in merge train for \`${pullRequest.baseRef}\`; waiting for required checks.`);
     let updateAttempted = false;
+    let updateExpectedHeadSha = null;
+    let observedUpdatedHeadAfterUpdateAttempt = false;
+    let observedPendingChecksOnUpdatedHead = false;
     if (pullRequest.mergeableState === 'behind') {
         await upsertStatusComment('updating-branch', `Branch is behind \`${pullRequest.baseRef}\`; attempting update/rebase before merge.`);
         logs.push(`Transition: pull request #${pullNumber} is behind '${pullRequest.baseRef}', attempting safe update branch.`);
@@ -30686,6 +30722,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             pullNumber,
             expectedHeadSha: pullRequest.headSha
         });
+        updateExpectedHeadSha = pullRequest.headSha;
         updateAttempted = updateResult.attempted;
         if (updateResult.updated) {
             logs.push(`Transition: update branch accepted for pull request #${pullNumber}; waiting for refreshed checks.`);
@@ -30714,6 +30751,8 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
     const deadline = Date.now() + waitTimeoutSeconds * 1000;
     let latestOutcome = 'pending';
     let rerunAttempted = false;
+    let trackedHeadSha = pullRequest.headSha;
+    let lastLoggedCheckEvaluation = null;
     while (Date.now() <= deadline) {
         pullRequest = await githubClient.getPullRequest({
             owner,
@@ -30731,6 +30770,18 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
                 logs
             };
         }
+        if (pullRequest.headSha !== trackedHeadSha) {
+            logs.push(`Transition: tracking head SHA moved from '${trackedHeadSha}' to '${pullRequest.headSha}'; resetting required-check evaluation state.`);
+            trackedHeadSha = pullRequest.headSha;
+            rerunAttempted = false;
+        }
+        if (updateAttempted &&
+            updateExpectedHeadSha &&
+            pullRequest.headSha !== updateExpectedHeadSha &&
+            !observedUpdatedHeadAfterUpdateAttempt) {
+            observedUpdatedHeadAfterUpdateAttempt = true;
+            logs.push(`Transition: update/rebase head advanced from '${updateExpectedHeadSha}' to '${pullRequest.headSha}'; tracking required checks on the new head.`);
+        }
         const statusContexts = await githubClient.getCombinedStatusContexts({
             owner,
             repo,
@@ -30747,6 +30798,22 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
             checkRuns
         });
         latestOutcome = checkEvaluation.overallOutcome;
+        const checkEvaluationSummary = `${pullRequest.headSha}:${latestOutcome}:${Object.keys(statusContexts).length}:${checkRuns.length}`;
+        if (checkEvaluationSummary !== lastLoggedCheckEvaluation) {
+            logs.push(`Transition: required checks on '${pullRequest.headSha}' evaluated as '${latestOutcome}' (status contexts: ${Object.keys(statusContexts).length}, check-runs: ${checkRuns.length}).`);
+            lastLoggedCheckEvaluation = checkEvaluationSummary;
+        }
+        if (observedUpdatedHeadAfterUpdateAttempt &&
+            !observedPendingChecksOnUpdatedHead &&
+            latestOutcome === 'pending' &&
+            hasPendingRequiredCheckActivity({
+                requiredContexts,
+                statusContexts,
+                checkRuns
+            })) {
+            observedPendingChecksOnUpdatedHead = true;
+            logs.push(`Transition: discovered pending required checks on updated head '${pullRequest.headSha}'; continuing to wait for completion.`);
+        }
         if (latestOutcome === 'failure') {
             const failingChecks = checkEvaluation.failingRequiredContexts.length > 0
                 ? checkEvaluation.failingRequiredContexts
@@ -30897,7 +30964,7 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
         await upsertStatusComment('waiting-checks', `Waiting for required checks on \`${pullRequest.headSha}\` for base branch \`${pullRequest.baseRef}\`.`);
         await sleep(pollIntervalSeconds * 1000);
     }
-    if (updateAttempted) {
+    if (updateAttempted && !observedPendingChecksOnUpdatedHead) {
         const timeoutMessage = 'Blocked: timed out while waiting for update/check completion after safe update attempt.';
         await upsertStatusComment('blocked', 'Timed out while waiting for branch update and required checks to complete.');
         logs.push(`Transition: ${timeoutMessage}`);

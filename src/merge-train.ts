@@ -198,12 +198,28 @@ const COMMENT_PHASE_ORDER: MergeTrainCommentPhase[] = [
   'merged'
 ];
 
+const RETRIGGER_CHECKBOX_UNCHECKED =
+  '- [ ] <!-- merge-train-retrigger-checkbox:unchecked --> Retrigger merge-train';
+
+export const parseRetriggerCheckbox = (
+  body: string
+): 'checked' | 'unchecked' | null => {
+  if (body.includes('<!-- merge-train-retrigger-checkbox:checked -->')) {
+    return 'checked';
+  }
+  if (body.includes('<!-- merge-train-retrigger-checkbox:unchecked -->')) {
+    return 'unchecked';
+  }
+  return null;
+};
+
 const buildMergeTrainStatusComment = (params: {
   pullNumber: number;
   baseRef: string;
   labelName: string;
   phase: MergeTrainCommentPhase;
   context: string;
+  includeRetriggerCheckbox?: boolean;
 }): string => {
   const isBlocked = params.phase === 'blocked';
   const currentPhaseLabel = COMMENT_PHASE_LABELS[params.phase];
@@ -219,7 +235,7 @@ const buildMergeTrainStatusComment = (params: {
     })
     .join('\n');
 
-  return [
+  const parts: string[] = [
     `## Merge Train Status: ${currentPhaseLabel}`,
     '',
     `Pull request #${params.pullNumber} is in the merge train for base branch \`${params.baseRef}\`.`,
@@ -236,7 +252,13 @@ const buildMergeTrainStatusComment = (params: {
     '### Lifecycle',
     progressChecklist,
     '</details>'
-  ].join('\n');
+  ];
+
+  if (params.includeRetriggerCheckbox && isBlocked) {
+    parts.push('', '---', '', RETRIGGER_CHECKBOX_UNCHECKED);
+  }
+
+  return parts.join('\n');
 };
 
 const parseLabelName = (label: unknown): string | null => {
@@ -622,7 +644,8 @@ export const runMergeTrain = async ({
   let statusCommentId: number | undefined;
   const upsertStatusComment = async (
     phase: MergeTrainCommentPhase,
-    context: string
+    context: string,
+    includeRetriggerCheckbox = false
   ): Promise<void> => {
     if (phase === lastCommentPhase && context === lastCommentContext) {
       return;
@@ -633,7 +656,8 @@ export const runMergeTrain = async ({
       baseRef: pullRequest.baseRef,
       labelName,
       phase,
-      context
+      context,
+      includeRetriggerCheckbox
     });
 
     statusCommentId = await githubClient.upsertMergeTrainStatusComment({
@@ -659,7 +683,8 @@ export const runMergeTrain = async ({
     const blockedMessage = `Blocked: trust policy gate failed (${trustPolicyFailureReason}).`;
     await upsertStatusComment(
       'blocked',
-      `Trust policy gate failed: ${trustPolicyFailureReason}`
+      `Trust policy gate failed: ${trustPolicyFailureReason}`,
+      true
     );
     logs.push(`Transition: ${blockedMessage}`);
     return {
@@ -850,7 +875,8 @@ export const runMergeTrain = async ({
           const failureMessage = `Blocked: required checks failed [${failingChecksList}] and no failed check-runs were eligible for one-time rerun.`;
           await upsertStatusComment(
             'blocked',
-            `Required checks failed (${failingChecksList}) and no failed check-runs were eligible for one-time rerun.`
+            `Required checks failed (${failingChecksList}) and no failed check-runs were eligible for one-time rerun.`,
+            true
           );
           logs.push(`Transition: ${failureMessage}`);
           return {
@@ -897,7 +923,8 @@ export const runMergeTrain = async ({
         'blocked',
         rerunAttempted
           ? `Required checks are still failing after one-time rerun (${failingChecksList}).`
-          : `Required checks are failing (${failingChecksList}); merge-train rerun is disabled.`
+          : `Required checks are failing (${failingChecksList}); merge-train rerun is disabled.`,
+        true
       );
       logs.push(`Transition: ${failureMessage}`);
       return {
@@ -927,7 +954,8 @@ export const runMergeTrain = async ({
           'Blocked: required checks are green but pull request is not mergeable yet.';
         await upsertStatusComment(
           'blocked',
-          'Required checks are green, but GitHub reports the pull request is not mergeable.'
+          'Required checks are green, but GitHub reports the pull request is not mergeable.',
+          true
         );
         logs.push(`Transition: ${blockedMessage}`);
         return {
@@ -1011,7 +1039,8 @@ export const runMergeTrain = async ({
         const blockedMessage = `Blocked: GitHub rejected merge attempt (${mergeResult.message}).`;
         await upsertStatusComment(
           'blocked',
-          `GitHub rejected the merge attempt (${mergeResult.message}).`
+          `GitHub rejected the merge attempt (${mergeResult.message}).`,
+          true
         );
         logs.push(`Transition: ${blockedMessage}`);
         return {
@@ -1131,7 +1160,8 @@ export const runMergeTrain = async ({
       'Blocked: timed out while waiting for update/check completion after safe update attempt.';
     await upsertStatusComment(
       'blocked',
-      'Timed out while waiting for branch update and required checks to complete.'
+      'Timed out while waiting for branch update and required checks to complete.',
+      true
     );
     logs.push(`Transition: ${timeoutMessage}`);
     return {
@@ -1147,7 +1177,8 @@ export const runMergeTrain = async ({
     'Blocked: timed out while waiting for required checks to finish.';
   await upsertStatusComment(
     'blocked',
-    'Timed out while waiting for required checks to finish.'
+    'Timed out while waiting for required checks to finish.',
+    true
   );
   logs.push(`Transition: ${timeoutMessage}`);
   return {

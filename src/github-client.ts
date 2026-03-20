@@ -68,8 +68,121 @@ const sleep = async (milliseconds: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 };
 
+type IssueComment = {
+  id: number;
+  body: string;
+};
+
 export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
   const octokit = github.getOctokit(token);
+  const inFlightCommentUpserts = new Map<string, Promise<number>>();
+
+  const listIssueComments = async ({
+    owner,
+    repo,
+    pullNumber
+  }: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+  }): Promise<IssueComment[]> => {
+    const comments: IssueComment[] = [];
+    let page = 1;
+
+    while (true) {
+      const response = await octokit.rest.issues.listComments({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        per_page: 100,
+        page
+      });
+
+      for (const comment of response.data) {
+        if (
+          typeof comment.id !== 'number' ||
+          typeof comment.body !== 'string'
+        ) {
+          continue;
+        }
+
+        comments.push({
+          id: comment.id,
+          body: comment.body
+        });
+      }
+
+      if (response.data.length < 100) {
+        return comments;
+      }
+
+      page += 1;
+    }
+  };
+
+  const selectMarkedStatusComments = (
+    comments: IssueComment[]
+  ): IssueComment[] => {
+    return comments
+      .filter((comment) => comment.body.includes(STATUS_COMMENT_MARKER))
+      .sort((left, right) => left.id - right.id);
+  };
+
+  const cleanupDuplicateStatusComments = async ({
+    owner,
+    repo,
+    authoritativeCommentId,
+    statusComments
+  }: {
+    owner: string;
+    repo: string;
+    authoritativeCommentId: number;
+    statusComments: IssueComment[];
+  }): Promise<void> => {
+    for (const statusComment of statusComments) {
+      if (statusComment.id === authoritativeCommentId) {
+        continue;
+      }
+
+      try {
+        await octokit.rest.issues.deleteComment({
+          owner,
+          repo,
+          comment_id: statusComment.id
+        });
+      } catch (error) {
+        if (
+          typeof error === 'object' &&
+          error !== null &&
+          'status' in error &&
+          error.status === 404
+        ) {
+          continue;
+        }
+
+        throw error;
+      }
+    }
+  };
+
+  const updateStatusCommentById = async ({
+    owner,
+    repo,
+    commentId,
+    body
+  }: {
+    owner: string;
+    repo: string;
+    commentId: number;
+    body: string;
+  }): Promise<void> => {
+    await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: commentId,
+      body
+    });
+  };
 
   return {
     getPullRequest: async ({
@@ -363,83 +476,113 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       body,
       commentId
     }) => {
-      const normalizedBody = withStatusCommentMarker(body);
+      const key = `${owner}/${repo}#${pullNumber}`;
+      const previous = inFlightCommentUpserts.get(key);
+      if (previous) {
+        await previous.catch(() => undefined);
+      }
 
-      if (typeof commentId === 'number' && Number.isInteger(commentId)) {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          try {
-            await octokit.rest.issues.updateComment({
-              owner,
-              repo,
-              comment_id: commentId,
-              body: normalizedBody
-            });
-            return commentId;
-          } catch (error) {
-            if (
-              typeof error === 'object' &&
-              error !== null &&
-              'status' in error &&
-              error.status === 404
-            ) {
-              if (attempt < 2) {
-                await sleep(250);
-                continue;
+      const upsertPromise = (async (): Promise<number> => {
+        const normalizedBody = withStatusCommentMarker(body);
+
+        if (typeof commentId === 'number' && Number.isInteger(commentId)) {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              await updateStatusCommentById({
+                owner,
+                repo,
+                commentId,
+                body: normalizedBody
+              });
+              return commentId;
+            } catch (error) {
+              if (
+                typeof error === 'object' &&
+                error !== null &&
+                'status' in error &&
+                error.status === 404
+              ) {
+                if (attempt < 2) {
+                  await sleep(250);
+                  continue;
+                }
+
+                break;
               }
 
-              return commentId;
+              throw error;
             }
-
-            throw error;
           }
         }
-      }
 
-      const response = await octokit.rest.issues.listComments({
-        owner,
-        repo,
-        issue_number: pullNumber,
-        per_page: 100
-      });
+        const statusComments = selectMarkedStatusComments(
+          await listIssueComments({ owner, repo, pullNumber })
+        );
 
-      let existingComment: { id: number; body: string } | undefined;
-      for (const comment of response.data) {
-        if (
-          typeof comment.body !== 'string' ||
-          !comment.body.includes(STATUS_COMMENT_MARKER)
-        ) {
-          continue;
-        }
+        let authoritativeComment = statusComments[0];
 
-        if (!existingComment || comment.id > existingComment.id) {
-          existingComment = {
-            id: comment.id,
-            body: comment.body
+        if (!authoritativeComment) {
+          const createResponse = await octokit.rest.issues.createComment({
+            owner,
+            repo,
+            issue_number: pullNumber,
+            body: normalizedBody
+          });
+
+          const refreshedStatusComments = selectMarkedStatusComments(
+            await listIssueComments({ owner, repo, pullNumber })
+          );
+          authoritativeComment = refreshedStatusComments[0] ?? {
+            id: createResponse.data.id,
+            body: normalizedBody
           };
-        }
-      }
+          await cleanupDuplicateStatusComments({
+            owner,
+            repo,
+            authoritativeCommentId: authoritativeComment.id,
+            statusComments: refreshedStatusComments
+          });
 
-      if (!existingComment) {
-        const createResponse = await octokit.rest.issues.createComment({
+          if (authoritativeComment.body !== normalizedBody) {
+            await updateStatusCommentById({
+              owner,
+              repo,
+              commentId: authoritativeComment.id,
+              body: normalizedBody
+            });
+          }
+
+          return authoritativeComment.id;
+        }
+
+        if (authoritativeComment.body !== normalizedBody) {
+          await updateStatusCommentById({
+            owner,
+            repo,
+            commentId: authoritativeComment.id,
+            body: normalizedBody
+          });
+        }
+
+        await cleanupDuplicateStatusComments({
           owner,
           repo,
-          issue_number: pullNumber,
-          body: normalizedBody
+          authoritativeCommentId: authoritativeComment.id,
+          statusComments
         });
-        return createResponse.data.id;
-      }
 
-      if (existingComment.body === normalizedBody) {
-        return existingComment.id;
-      }
+        return authoritativeComment.id;
+      })();
 
-      await octokit.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: existingComment.id,
-        body: normalizedBody
-      });
-      return existingComment.id;
+      inFlightCommentUpserts.set(key, upsertPromise);
+
+      try {
+        return await upsertPromise;
+      } finally {
+        if (inFlightCommentUpserts.get(key) === upsertPromise) {
+          inFlightCommentUpserts.delete(key);
+        }
+      }
     }
   };
 };

@@ -473,6 +473,7 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
 
       const upsertPromise = (async (): Promise<number> => {
         const normalizedBody = withStatusCommentMarker(body);
+        let retryStatusCommentLookup = false;
 
         if (typeof commentId === 'number' && Number.isInteger(commentId)) {
           for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -496,6 +497,7 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
                   continue;
                 }
 
+                retryStatusCommentLookup = true;
                 break;
               }
 
@@ -504,9 +506,22 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
           }
         }
 
-        const statusComments = selectMarkedStatusComments(
+        let statusComments = selectMarkedStatusComments(
           await listIssueComments({ owner, repo, pullNumber })
         );
+
+        if (retryStatusCommentLookup && statusComments.length === 0) {
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            await sleep(250);
+            statusComments = selectMarkedStatusComments(
+              await listIssueComments({ owner, repo, pullNumber })
+            );
+
+            if (statusComments.length > 0) {
+              break;
+            }
+          }
+        }
 
         let authoritativeComment = statusComments[0];
 

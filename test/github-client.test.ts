@@ -439,8 +439,57 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     });
 
     expect(updateComment).toHaveBeenCalledTimes(3);
-    expect(listComments).toHaveBeenCalledTimes(2);
+    expect(listComments).toHaveBeenCalledTimes(6);
     expect(createComment).toHaveBeenCalledTimes(1);
     expect(commentId).toBe(88);
+  });
+
+  it('waits for eventual consistency after direct update 404 before creating a new marker', async () => {
+    const listComments = vi
+      .fn()
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: 91,
+            body: 'existing\n\n<!-- merge-train-status-comment:v1 -->'
+          }
+        ]
+      });
+    const createComment = vi.fn();
+    const updateComment = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 404, message: 'Not Found' })
+      .mockRejectedValueOnce({ status: 404, message: 'Not Found' })
+      .mockRejectedValueOnce({ status: 404, message: 'Not Found' })
+      .mockResolvedValue(undefined);
+
+    vi.mocked(github.getOctokit).mockReturnValue({
+      rest: {
+        issues: {
+          listComments,
+          createComment,
+          updateComment
+        }
+      }
+    } as never);
+
+    const client = createGitHubClient('token');
+    const commentId = await client.upsertMergeTrainStatusComment({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      pullNumber: 9,
+      body: 'new status body',
+      commentId: 77
+    });
+
+    expect(updateComment).toHaveBeenCalledTimes(4);
+    expect(updateComment).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({ comment_id: 91 })
+    );
+    expect(listComments).toHaveBeenCalledTimes(2);
+    expect(createComment).not.toHaveBeenCalled();
+    expect(commentId).toBe(91);
   });
 });

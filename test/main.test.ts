@@ -46,8 +46,12 @@ const eventPayload = {
 };
 
 const mockInputs = (overrides: Record<string, string>, fallback = ''): void => {
+  const resolvedInputs: Record<string, string> = {
+    token: 'gh-token',
+    ...overrides
+  };
   mocked.getInput.mockImplementation(
-    (name: string) => overrides[name] ?? fallback
+    (name: string) => resolvedInputs[name] ?? fallback
   );
 };
 
@@ -72,7 +76,7 @@ const expectDefaultInputCalls = (): void => {
   expect(mocked.getInput).toHaveBeenNthCalledWith(4, 'rerun-failed-checks');
   expect(mocked.getInput).toHaveBeenNthCalledWith(5, 'wait-timeout-seconds');
   expect(mocked.getInput).toHaveBeenNthCalledWith(6, 'poll-interval-seconds');
-  expect(mocked.getInput).toHaveBeenNthCalledWith(7, 'github-token');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(7, 'token');
 };
 
 describe('run', () => {
@@ -87,13 +91,12 @@ describe('run', () => {
 
     vi.stubEnv('GITHUB_EVENT_NAME', 'pull_request');
     vi.stubEnv('GITHUB_EVENT_PATH', '/tmp/event.json');
-    vi.stubEnv('GITHUB_TOKEN', 'gh-token');
     mocked.createGitHubClient.mockReturnValue(githubClient);
     mocked.readFileSync.mockReturnValue(JSON.stringify(eventPayload));
   });
 
   it('uses default config and emits outputs when eligible', async () => {
-    mocked.getInput.mockReturnValue('');
+    mockInputs({});
     mocked.runMergeTrain.mockResolvedValue({
       eligible: true,
       status: 'merged',
@@ -149,7 +152,7 @@ describe('run', () => {
   });
 
   it('sets failed when merge-train execution throws', async () => {
-    mockInputs({ 'github-token': '' }, 'ready-to-merge');
+    mockInputs({}, 'ready-to-merge');
     mocked.runMergeTrain.mockRejectedValue(new Error('boom'));
 
     await run();
@@ -179,13 +182,12 @@ describe('run', () => {
   });
 
   it('sets failed when no token is provided', async () => {
-    mockInputs({ 'label-name': 'ready-to-merge', 'github-token': '' });
-    vi.stubEnv('GITHUB_TOKEN', '');
+    mockInputs({ 'label-name': 'ready-to-merge', token: '' });
 
     await run();
 
     expect(mocked.setFailed).toHaveBeenCalledWith(
-      'Missing GitHub token. Set input github-token or GITHUB_TOKEN.'
+      'Missing GitHub token. Set required input token.'
     );
     expect(mocked.runMergeTrain).not.toHaveBeenCalled();
   });

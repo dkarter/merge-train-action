@@ -2,10 +2,9 @@ name: Merge Train Action
 description: Safely prepares labeled pull requests for merge-train workflows.
 author: merge-train-action maintainers
 inputs:
-  github-token:
-    description: Token used for pull request update/check/comment/merge API calls (requires contents:write, pull-requests:write, issues:write, checks:read, statuses:read).
-    required: false
-    default: ''
+  token:
+    description: Token used for pull request update/check/comment/merge API calls (requires contents:write, pull-requests:write, issues:write, statuses:read; add checks:write when rerun-failed-checks is enabled).
+    required: true
   label-name:
     description: Label that marks pull requests as merge-train candidates.
     required: false
@@ -36,7 +35,7 @@ outputs:
   status:
     description: Final state (`merged`, `blocked`, or `noop`) for downstream steps.
 runs:
-  using: node20
+  using: node24
   main: dist/index.js
 branding:
   icon: git-merge

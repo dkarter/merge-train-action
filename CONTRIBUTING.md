@@ -4,7 +4,7 @@ Thanks for contributing to `merge-train-action`.
 
 ## Prerequisites
 
-- Node.js 20, lefthook, and gitleaks (configured via `mise.toml`)
+- Node.js 24, lefthook, and gitleaks (configured via `mise.toml`)
 - Bun
 
 ## Setup
@@ -60,7 +60,7 @@ git fetch --tags
 git rev-parse v1
 ```
 
-Node runtime caveat: contributors use Bun-first commands for development (`bun run ...`), while published action execution remains on Node 20 via `action.yml`.
+Node runtime caveat: contributors use Bun-first commands for development (`bun run ...`), while published action execution remains on Node 24 via `action.yml`.
 
 ## Pull Request and Reviewer Expectations
 

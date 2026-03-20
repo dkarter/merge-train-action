@@ -19,7 +19,7 @@
     "ci": "bun run lint && bun run format:check && bun run test && bun run package && bun run dist:check && bun run audit && bun run secrets:scan"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "keywords": [
     "github-action",

@@ -11,7 +11,7 @@ import { createGitHubClient } from './github-client';
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'n', 'off']);
 const INPUT_LABEL_NAME = 'label-name';
-const INPUT_GITHUB_TOKEN = 'github-token';
+const INPUT_TOKEN = 'token';
 const INPUT_RERUN_FAILED_CHECKS = 'rerun-failed-checks';
 const INPUT_WAIT_TIMEOUT_SECONDS = 'wait-timeout-seconds';
 const INPUT_POLL_INTERVAL_SECONDS = 'poll-interval-seconds';
@@ -79,12 +79,9 @@ export const run = async (): Promise<void> => {
       core.getInput(INPUT_POLL_INTERVAL_SECONDS) || '',
       DEFAULT_POLL_INTERVAL_SECONDS
     );
-    const token =
-      core.getInput(INPUT_GITHUB_TOKEN) || process.env.GITHUB_TOKEN || '';
+    const token = core.getInput(INPUT_TOKEN);
     if (!token) {
-      throw new Error(
-        'Missing GitHub token. Set input github-token or GITHUB_TOKEN.'
-      );
+      throw new Error('Missing GitHub token. Set required input token.');
     }
 
     const eventName = process.env.GITHUB_EVENT_NAME || '';

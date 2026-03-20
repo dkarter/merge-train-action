@@ -6,7 +6,7 @@ Reusable GitHub Action for safely updating and merging labeled pull requests.
 
 This repository is bootstrapped with a production-ready TypeScript-based JavaScript action foundation:
 
-- Node 20 action runtime (`action.yml`)
+- Node 24 action runtime (`action.yml`)
 - TypeScript source in `src/` bundled to committed `dist/` output
 - Lint, format, and unit tests wired for local development and CI
 - Safe PR branch update via GitHub `update-branch` semantics (no rebase/force-push)
@@ -47,7 +47,7 @@ jobs:
       - name: Run merge train action
         uses: your-org/merge-train-action@v1
         with:
-          github-token: ${{ github.token }}
+          token: ${{ github.token }}
           label-name: ready-to-merge
 ```
 
@@ -77,7 +77,7 @@ jobs:
       - name: Run merge train action
         uses: your-org/merge-train-action@v1
         with:
-          github-token: ${{ github.token }}
+          token: ${{ github.token }}
           label-name: ship-it
           wait-timeout-seconds: '600'
           poll-interval-seconds: '15'
@@ -92,7 +92,7 @@ Use `pause: 'true'` to force a safe no-op run (no branch update, no rerun reques
 
 ```yaml
 with:
-  github-token: ${{ github.token }}
+  token: ${{ github.token }}
   label-name: ready-to-merge
   pause: 'true'
   pause-reason: 'maintenance window: GitHub incident #1234'
@@ -125,6 +125,12 @@ Deterministic behavior:
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.
+
+### Migration note (`github-token` -> `token`)
+
+- The action now accepts a single required auth input: `token`.
+- Replace any existing `with.github-token` usage with `with.token`.
+- No fallback to `GITHUB_TOKEN` env var is applied by the action; pass `token` explicitly.
 
 ### PR status comment lifecycle
 
@@ -232,6 +238,12 @@ Use the minimum job permissions below for this action:
 - `checks: read` is sufficient only when `rerun-failed-checks: 'false'`.
 - `statuses: read` to evaluate required status contexts.
 
+Token guidance:
+
+- `github.token` usually works for same-repository PR flows when the workflow job permissions above are granted.
+- For cross-repository or restricted environments, pass a fine-grained PAT via `with.token`.
+- Fine-grained PAT should include repository permissions: Contents (Read and write), Pull requests (Read and write), Issues (Read and write), Commit statuses (Read), and Checks (Read and write when `rerun-failed-checks` is enabled).
+
 Safety guardrails in this action:
 
 - Uses optimistic SHA merge (`pulls.merge` with `sha`) to prevent stale-head merges.
@@ -275,7 +287,7 @@ This repository is Bun-first for local development and CI commands.
 
 - Use `bun run ...` for all documented local tasks.
 - Use `task ci:*` aliases only as optional wrappers around Bun commands.
-- Node 20 is still required because GitHub Actions executes published JavaScript actions on the Node runtime defined in `action.yml` (`runs.using: node20`).
+- Node 24 is required because GitHub Actions executes published JavaScript actions on the Node runtime defined in `action.yml` (`runs.using: node24`).
 
 Install toolchain and dependencies:
 

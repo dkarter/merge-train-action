@@ -84,6 +84,10 @@ jobs:
           rerun-failed-checks: 'false' # optional, defaults to true
           pause: 'false' # optional, defaults to false
           pause-reason: '' # optional, logged when pause=true
+          trust-same-repo-only: 'true' # optional, defaults to true
+          trust-min-author-association: '' # optional
+          trust-author-allowlist: '' # optional CSV of trusted logins
+          trust-require-approved-review: 'false' # optional, defaults to false
 ```
 
 ### Pause and resume controls
@@ -99,6 +103,38 @@ with:
 ```
 
 When paused, the action logs an explicit pause message and returns output `status: noop`.
+
+### Trust Policy Gates
+
+Trust-policy gates run before any update-branch, check rerun, or merge mutation.
+
+- `trust-same-repo-only` (default `true`): blocks merge-train execution for fork-originated PRs.
+- `trust-min-author-association` (optional): requires minimum PR author trust level (`NONE`, `FIRST_TIME_CONTRIBUTOR`, `FIRST_TIMER`, `CONTRIBUTOR`, `COLLABORATOR`, `MEMBER`, `OWNER`).
+- `trust-author-allowlist` (optional): comma-separated trusted GitHub logins. Allowlisted authors bypass the minimum association gate.
+- `trust-require-approved-review` (optional, default `false`): requires PR review decision to be `APPROVED`.
+
+On trust-policy failure, the action safely exits with `status: blocked` and updates the PR status comment with the exact failure reason.
+
+#### Example: default same-repo gate only
+
+```yaml
+with:
+  token: ${{ github.token }}
+  label-name: ready-to-merge
+  trust-same-repo-only: 'true'
+```
+
+#### Example: explicit trusted-fork policy
+
+```yaml
+with:
+  token: ${{ secrets.MERGE_TRAIN_PAT }}
+  label-name: ready-to-merge
+  trust-same-repo-only: 'false'
+  trust-min-author-association: 'MEMBER'
+  trust-author-allowlist: 'release-bot,staff-engineer'
+  trust-require-approved-review: 'true'
+```
 
 The action is eligible when:
 
@@ -122,6 +158,7 @@ Deterministic behavior:
 - Head SHA changes detected before merge restart the check loop to avoid stale merges.
 - Failed checks trigger at most one rerun attempt when `rerun-failed-checks` is enabled.
 - Action returns `blocked` with failing check names if checks are still failing.
+- Action returns `blocked` when trust-policy gates fail and includes the reason in the lifecycle comment.
 - Successful merge returns `merged`.
 
 Output `status` values: `merged`, `blocked`, `noop`.
@@ -184,6 +221,19 @@ What to do:
 2. Re-run CI if needed (the action requests only one rerun for failed required check-runs when enabled).
 3. Push a fix commit or retrigger with a `synchronize` event.
 
+### `status=blocked` due to trust policy
+
+Symptoms:
+
+- Logs show `trust policy gate failed`.
+- PR status comment includes a trust-policy reason (for example, fork origin with same-repo gate enabled).
+
+What to do:
+
+1. Confirm whether your policy should allow this PR source/author/review state.
+2. Update trust inputs in workflow only if that change is intentional and approved by repository maintainers.
+3. Re-run via `synchronize` or relabel once the trust requirement is satisfied.
+
 ### Action does nothing (`status=noop`)
 
 Symptoms:
@@ -241,7 +291,7 @@ Use the minimum job permissions below for this action:
 Token guidance:
 
 - `github.token` usually works for same-repository PR flows when the workflow job permissions above are granted.
-- For cross-repository or restricted environments, pass a fine-grained PAT via `with.token`.
+- Default trust settings block cross-repository PRs (`trust-same-repo-only: 'true'`). If you intentionally allow trusted forks, pass a fine-grained PAT via `with.token` and configure trust gates explicitly.
 - Fine-grained PAT should include repository permissions: Contents (Read and write), Pull requests (Read and write), Issues (Read and write), Commit statuses (Read), and Checks (Read and write when `rerun-failed-checks` is enabled).
 
 Safety guardrails in this action:

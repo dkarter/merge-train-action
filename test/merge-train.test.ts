@@ -17,6 +17,11 @@ const buildPullRequestState = (
   headSha: 'sha-1',
   baseRef: 'main',
   labels: ['ready-to-merge'],
+  authorLogin: 'octocat',
+  authorAssociation: 'MEMBER',
+  reviewDecision: 'APPROVED',
+  headRepositoryFullName: 'acme/merge-train-action',
+  baseRepositoryFullName: 'acme/merge-train-action',
   ...overrides
 });
 
@@ -536,6 +541,126 @@ describe('runMergeTrain', () => {
       "No-op: pull request #9 is no longer labeled 'ready-to-merge'."
     );
     expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('blocks when same-repo trust gate fails', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest).mockResolvedValueOnce(
+      buildPullRequestState({
+        headRepositoryFullName: 'external/forked-repo',
+        baseRepositoryFullName: 'acme/merge-train-action'
+      })
+    );
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.message).toContain('trust policy gate failed');
+    expect(result.message).toContain('same-repo-only is enabled');
+    expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
+    expect(githubClient.upsertMergeTrainStatusComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('Trust policy gate failed')
+      })
+    );
+  });
+
+  it('blocks when approved review trust gate is required but missing', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest).mockResolvedValueOnce(
+      buildPullRequestState({
+        reviewDecision: 'REVIEW_REQUIRED'
+      })
+    );
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      trustRequireApprovedReview: true,
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('blocked');
+    expect(result.message).toContain("review decision is 'REVIEW_REQUIRED'");
+    expect(githubClient.mergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('allows forked PRs when same-repo gate is disabled and author is allowlisted', async () => {
+    const githubClient = createClient();
+    vi.mocked(githubClient.getPullRequest)
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          headSha: 'sha-1',
+          headRepositoryFullName: 'external/forked-repo',
+          baseRepositoryFullName: 'acme/merge-train-action',
+          authorLogin: 'trusted-user',
+          authorAssociation: 'NONE'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          headSha: 'sha-1',
+          headRepositoryFullName: 'external/forked-repo',
+          baseRepositoryFullName: 'acme/merge-train-action',
+          authorLogin: 'trusted-user',
+          authorAssociation: 'NONE'
+        })
+      )
+      .mockResolvedValueOnce(
+        buildPullRequestState({
+          headSha: 'sha-1',
+          headRepositoryFullName: 'external/forked-repo',
+          baseRepositoryFullName: 'acme/merge-train-action',
+          authorLogin: 'trusted-user',
+          authorAssociation: 'NONE'
+        })
+      );
+    vi.mocked(githubClient.updateBranch).mockResolvedValue({
+      attempted: false,
+      updated: false
+    });
+    vi.mocked(githubClient.getRequiredCheckContexts).mockResolvedValue([
+      'ci/test'
+    ]);
+    vi.mocked(githubClient.getCombinedStatusContexts).mockResolvedValue({
+      'ci/test': 'success'
+    });
+    vi.mocked(githubClient.getCheckRuns).mockResolvedValue([]);
+    vi.mocked(githubClient.mergePullRequest).mockResolvedValue({
+      merged: true,
+      message: 'Pull Request successfully merged'
+    });
+
+    const result = await runMergeTrain({
+      eventName: 'pull_request',
+      eventAction: 'synchronize',
+      labelName: 'ready-to-merge',
+      payload: basePayload,
+      githubClient,
+      trustSameRepoOnly: false,
+      trustMinAuthorAssociation: 'MEMBER',
+      trustAuthorAllowlist: ['trusted-user'],
+      waitTimeoutSeconds: 1,
+      pollIntervalSeconds: 1,
+      sleep: vi.fn()
+    });
+
+    expect(result.status).toBe('merged');
+    expect(githubClient.mergePullRequest).toHaveBeenCalled();
   });
 
   it('restarts checks when head SHA changes before merge', async () => {

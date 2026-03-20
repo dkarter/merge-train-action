@@ -30015,6 +30015,7 @@ const createGitHubClient = (token) => {
                 repo,
                 pull_number: pullNumber
             });
+            const reviewDecision = response.data.review_decision;
             return {
                 number: response.data.number,
                 state: response.data.state,
@@ -30025,7 +30026,12 @@ const createGitHubClient = (token) => {
                 mergeableState: response.data.mergeable_state ?? null,
                 headSha: response.data.head.sha,
                 baseRef: response.data.base.ref,
-                labels: extractLabelNames(response.data.labels)
+                labels: extractLabelNames(response.data.labels),
+                authorLogin: response.data.user?.login ?? null,
+                authorAssociation: response.data.author_association ?? null,
+                reviewDecision: reviewDecision ?? null,
+                headRepositoryFullName: response.data.head.repo?.full_name ?? null,
+                baseRepositoryFullName: response.data.base.repo?.full_name ?? null
             };
         },
         updateBranch: async ({ owner, repo, pullNumber, expectedHeadSha }) => {
@@ -30357,6 +30363,10 @@ const INPUT_WAIT_TIMEOUT_SECONDS = 'wait-timeout-seconds';
 const INPUT_POLL_INTERVAL_SECONDS = 'poll-interval-seconds';
 const INPUT_PAUSE = 'pause';
 const INPUT_PAUSE_REASON = 'pause-reason';
+const INPUT_TRUST_SAME_REPO_ONLY = 'trust-same-repo-only';
+const INPUT_TRUST_MIN_AUTHOR_ASSOCIATION = 'trust-min-author-association';
+const INPUT_TRUST_AUTHOR_ALLOWLIST = 'trust-author-allowlist';
+const INPUT_TRUST_REQUIRE_APPROVED_REVIEW = 'trust-require-approved-review';
 const toBoolean = (value, fallback) => {
     const normalized = value.trim().toLowerCase();
     if (TRUE_VALUES.has(normalized)) {
@@ -30373,6 +30383,12 @@ const toPositiveInteger = (value, fallback) => {
         return fallback;
     }
     return parsed;
+};
+const toCsvList = (value) => {
+    return value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
 };
 const readPayload = () => {
     const eventPath = process.env.GITHUB_EVENT_PATH;
@@ -30399,6 +30415,12 @@ const run = async () => {
         const rerunFailedChecks = toBoolean(core.getInput(INPUT_RERUN_FAILED_CHECKS) || '', true);
         const waitTimeoutSeconds = toPositiveInteger(core.getInput(INPUT_WAIT_TIMEOUT_SECONDS) || '', merge_train_2.DEFAULT_WAIT_TIMEOUT_SECONDS);
         const pollIntervalSeconds = toPositiveInteger(core.getInput(INPUT_POLL_INTERVAL_SECONDS) || '', merge_train_2.DEFAULT_POLL_INTERVAL_SECONDS);
+        const trustSameRepoOnly = toBoolean(core.getInput(INPUT_TRUST_SAME_REPO_ONLY) || '', true);
+        const trustMinAuthorAssociation = core
+            .getInput(INPUT_TRUST_MIN_AUTHOR_ASSOCIATION)
+            .trim();
+        const trustAuthorAllowlist = toCsvList(core.getInput(INPUT_TRUST_AUTHOR_ALLOWLIST) || '');
+        const trustRequireApprovedReview = toBoolean(core.getInput(INPUT_TRUST_REQUIRE_APPROVED_REVIEW) || '', false);
         const token = core.getInput(INPUT_TOKEN);
         if (!token) {
             throw new Error('Missing GitHub token. Set required input token.');
@@ -30414,7 +30436,11 @@ const run = async () => {
             githubClient,
             rerunFailedChecks,
             waitTimeoutSeconds,
-            pollIntervalSeconds
+            pollIntervalSeconds,
+            trustSameRepoOnly,
+            trustMinAuthorAssociation,
+            trustAuthorAllowlist,
+            trustRequireApprovedReview
         });
         for (const logEntry of result.logs) {
             core.info(logEntry);
@@ -30459,6 +30485,15 @@ const FAILURE_CHECK_CONCLUSIONS = new Set([
     'startup_failure',
     'timed_out'
 ]);
+const AUTHOR_ASSOCIATION_ORDER = {
+    NONE: 0,
+    FIRST_TIME_CONTRIBUTOR: 1,
+    FIRST_TIMER: 2,
+    CONTRIBUTOR: 3,
+    COLLABORATOR: 4,
+    MEMBER: 5,
+    OWNER: 6
+};
 const COMMENT_PHASE_LABELS = {
     'waiting-checks': 'Waiting for CI / required checks',
     'updating-branch': 'Updating / rebasing branch',
@@ -30564,6 +30599,66 @@ const combineCheckOutcomes = (outcomes) => {
     }
     return 'pending';
 };
+const normalizeAssociation = (value) => {
+    if (!value) {
+        return null;
+    }
+    const normalized = value.trim().toUpperCase();
+    if (!normalized) {
+        return null;
+    }
+    return normalized;
+};
+const normalizeReviewDecision = (value) => {
+    if (!value) {
+        return null;
+    }
+    const normalized = value.trim().toUpperCase();
+    return normalized.length > 0 ? normalized : null;
+};
+const evaluateTrustPolicy = (params) => {
+    const { pullRequest, sameRepoOnly, minAuthorAssociation, authorAllowlist, requireApprovedReview } = params;
+    if (sameRepoOnly) {
+        if (!pullRequest.baseRepositoryFullName ||
+            !pullRequest.headRepositoryFullName) {
+            return 'same-repo-only is enabled, but repository provenance data is unavailable in the pull request payload.';
+        }
+        if (pullRequest.baseRepositoryFullName.toLowerCase() !==
+            pullRequest.headRepositoryFullName.toLowerCase()) {
+            return `same-repo-only is enabled and head repository '${pullRequest.headRepositoryFullName}' does not match base repository '${pullRequest.baseRepositoryFullName}'.`;
+        }
+    }
+    const normalizedAllowlist = new Set(authorAllowlist.map((entry) => entry.toLowerCase()));
+    const authorLogin = pullRequest.authorLogin?.toLowerCase();
+    const isAllowlisted = authorLogin
+        ? normalizedAllowlist.has(authorLogin)
+        : false;
+    if (normalizedAllowlist.size > 0 && !isAllowlisted && !minAuthorAssociation) {
+        return `author '${pullRequest.authorLogin ?? 'unknown'}' is not present in configured trust-author-allowlist.`;
+    }
+    const normalizedMinimumAssociation = normalizeAssociation(minAuthorAssociation ?? null);
+    if (normalizedMinimumAssociation && !isAllowlisted) {
+        const requiredLevel = AUTHOR_ASSOCIATION_ORDER[normalizedMinimumAssociation];
+        if (typeof requiredLevel !== 'number') {
+            return `minimum author association '${normalizedMinimumAssociation}' is not supported.`;
+        }
+        const actualAssociation = normalizeAssociation(pullRequest.authorAssociation);
+        if (!actualAssociation) {
+            return `minimum author association '${normalizedMinimumAssociation}' is required, but pull request author association is unavailable.`;
+        }
+        const actualLevel = AUTHOR_ASSOCIATION_ORDER[actualAssociation];
+        if (typeof actualLevel !== 'number' || actualLevel < requiredLevel) {
+            return `author association '${actualAssociation}' is below required minimum '${normalizedMinimumAssociation}'.`;
+        }
+    }
+    if (requireApprovedReview) {
+        const reviewDecision = normalizeReviewDecision(pullRequest.reviewDecision);
+        if (reviewDecision !== 'APPROVED') {
+            return `approved review is required, but current review decision is '${reviewDecision ?? 'UNKNOWN'}'.`;
+        }
+    }
+    return null;
+};
 const evaluateRequiredChecks = (params) => {
     if (params.requiredContexts.length === 0) {
         return {
@@ -30624,7 +30719,7 @@ const isNoopPullRequestState = (pullRequest, labelName) => {
 const defaultSleep = async (milliseconds) => {
     await new Promise((resolve) => setTimeout(resolve, milliseconds));
 };
-const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githubClient, rerunFailedChecks = true, waitTimeoutSeconds = exports.DEFAULT_WAIT_TIMEOUT_SECONDS, pollIntervalSeconds = exports.DEFAULT_POLL_INTERVAL_SECONDS, sleep = defaultSleep }) => {
+const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githubClient, rerunFailedChecks = true, waitTimeoutSeconds = exports.DEFAULT_WAIT_TIMEOUT_SECONDS, pollIntervalSeconds = exports.DEFAULT_POLL_INTERVAL_SECONDS, trustSameRepoOnly = true, trustMinAuthorAssociation, trustAuthorAllowlist = [], trustRequireApprovedReview = false, sleep = defaultSleep }) => {
     const webhookPayload = payload;
     const logs = [];
     if (eventName !== 'pull_request') {
@@ -30708,6 +30803,25 @@ const runMergeTrain = async ({ eventName, eventAction, payload, labelName, githu
         lastCommentContext = context;
         logs.push(`Transition: updated PR status comment (${phase}).`);
     };
+    const trustPolicyFailureReason = evaluateTrustPolicy({
+        pullRequest,
+        sameRepoOnly: trustSameRepoOnly,
+        minAuthorAssociation: trustMinAuthorAssociation,
+        authorAllowlist: trustAuthorAllowlist,
+        requireApprovedReview: trustRequireApprovedReview
+    });
+    if (trustPolicyFailureReason) {
+        const blockedMessage = `Blocked: trust policy gate failed (${trustPolicyFailureReason}).`;
+        await upsertStatusComment('blocked', `Trust policy gate failed: ${trustPolicyFailureReason}`);
+        logs.push(`Transition: ${blockedMessage}`);
+        return {
+            eligible: true,
+            status: 'blocked',
+            labelName,
+            message: blockedMessage,
+            logs
+        };
+    }
     await upsertStatusComment('waiting-checks', `Queued in merge train for \`${pullRequest.baseRef}\`; waiting for required checks.`);
     let updateAttempted = false;
     let updateExpectedHeadSha = null;

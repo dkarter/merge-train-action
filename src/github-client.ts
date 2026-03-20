@@ -82,6 +82,12 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
         repo,
         pull_number: pullNumber
       });
+      const reviewDecision = (
+        response.data as {
+          review_decision?: string | null;
+        }
+      ).review_decision;
+
       return {
         number: response.data.number,
         state: response.data.state,
@@ -93,7 +99,12 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
         mergeableState: response.data.mergeable_state ?? null,
         headSha: response.data.head.sha,
         baseRef: response.data.base.ref,
-        labels: extractLabelNames(response.data.labels)
+        labels: extractLabelNames(response.data.labels),
+        authorLogin: response.data.user?.login ?? null,
+        authorAssociation: response.data.author_association ?? null,
+        reviewDecision: reviewDecision ?? null,
+        headRepositoryFullName: response.data.head.repo?.full_name ?? null,
+        baseRepositoryFullName: response.data.base.repo?.full_name ?? null
       };
     },
 

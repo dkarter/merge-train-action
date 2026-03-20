@@ -17,6 +17,10 @@ const INPUT_WAIT_TIMEOUT_SECONDS = 'wait-timeout-seconds';
 const INPUT_POLL_INTERVAL_SECONDS = 'poll-interval-seconds';
 const INPUT_PAUSE = 'pause';
 const INPUT_PAUSE_REASON = 'pause-reason';
+const INPUT_TRUST_SAME_REPO_ONLY = 'trust-same-repo-only';
+const INPUT_TRUST_MIN_AUTHOR_ASSOCIATION = 'trust-min-author-association';
+const INPUT_TRUST_AUTHOR_ALLOWLIST = 'trust-author-allowlist';
+const INPUT_TRUST_REQUIRE_APPROVED_REVIEW = 'trust-require-approved-review';
 
 const toBoolean = (value: string, fallback: boolean): boolean => {
   const normalized = value.trim().toLowerCase();
@@ -38,6 +42,13 @@ const toPositiveInteger = (value: string, fallback: number): number => {
   }
 
   return parsed;
+};
+
+const toCsvList = (value: string): string[] => {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 };
 
 const readPayload = (): unknown => {
@@ -79,6 +90,20 @@ export const run = async (): Promise<void> => {
       core.getInput(INPUT_POLL_INTERVAL_SECONDS) || '',
       DEFAULT_POLL_INTERVAL_SECONDS
     );
+    const trustSameRepoOnly = toBoolean(
+      core.getInput(INPUT_TRUST_SAME_REPO_ONLY) || '',
+      true
+    );
+    const trustMinAuthorAssociation = core
+      .getInput(INPUT_TRUST_MIN_AUTHOR_ASSOCIATION)
+      .trim();
+    const trustAuthorAllowlist = toCsvList(
+      core.getInput(INPUT_TRUST_AUTHOR_ALLOWLIST) || ''
+    );
+    const trustRequireApprovedReview = toBoolean(
+      core.getInput(INPUT_TRUST_REQUIRE_APPROVED_REVIEW) || '',
+      false
+    );
     const token = core.getInput(INPUT_TOKEN);
     if (!token) {
       throw new Error('Missing GitHub token. Set required input token.');
@@ -96,7 +121,11 @@ export const run = async (): Promise<void> => {
       githubClient,
       rerunFailedChecks,
       waitTimeoutSeconds,
-      pollIntervalSeconds
+      pollIntervalSeconds,
+      trustSameRepoOnly,
+      trustMinAuthorAssociation,
+      trustAuthorAllowlist,
+      trustRequireApprovedReview
     });
 
     for (const logEntry of result.logs) {

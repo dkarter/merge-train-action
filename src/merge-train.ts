@@ -44,6 +44,11 @@ export type PullRequestState = {
   headSha: string;
   baseRef: string;
   labels: string[];
+  authorLogin: string | null;
+  authorAssociation: string | null;
+  reviewDecision: string | null;
+  headRepositoryFullName: string | null;
+  baseRepositoryFullName: string | null;
 };
 
 export type MergeResult = {
@@ -126,6 +131,10 @@ type MergeTrainParams = {
   rerunFailedChecks?: boolean;
   waitTimeoutSeconds?: number;
   pollIntervalSeconds?: number;
+  trustSameRepoOnly?: boolean;
+  trustMinAuthorAssociation?: string;
+  trustAuthorAllowlist?: string[];
+  trustRequireApprovedReview?: boolean;
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
@@ -144,6 +153,16 @@ type RepositoryPayload = {
 };
 
 type CheckOutcome = 'success' | 'failure' | 'pending';
+
+const AUTHOR_ASSOCIATION_ORDER: Record<string, number> = {
+  NONE: 0,
+  FIRST_TIME_CONTRIBUTOR: 1,
+  FIRST_TIMER: 2,
+  CONTRIBUTOR: 3,
+  COLLABORATOR: 4,
+  MEMBER: 5,
+  OWNER: 6
+};
 
 const COMMENT_PHASE_LABELS: Record<MergeTrainCommentPhase, string> = {
   'waiting-checks': 'Waiting for CI / required checks',
@@ -292,6 +311,104 @@ const combineCheckOutcomes = (outcomes: CheckOutcome[]): CheckOutcome => {
   return 'pending';
 };
 
+const normalizeAssociation = (value: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const normalizeReviewDecision = (value: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const evaluateTrustPolicy = (params: {
+  pullRequest: PullRequestState;
+  sameRepoOnly: boolean;
+  minAuthorAssociation?: string;
+  authorAllowlist: string[];
+  requireApprovedReview: boolean;
+}): string | null => {
+  const {
+    pullRequest,
+    sameRepoOnly,
+    minAuthorAssociation,
+    authorAllowlist,
+    requireApprovedReview
+  } = params;
+
+  if (sameRepoOnly) {
+    if (
+      !pullRequest.baseRepositoryFullName ||
+      !pullRequest.headRepositoryFullName
+    ) {
+      return 'same-repo-only is enabled, but repository provenance data is unavailable in the pull request payload.';
+    }
+
+    if (
+      pullRequest.baseRepositoryFullName.toLowerCase() !==
+      pullRequest.headRepositoryFullName.toLowerCase()
+    ) {
+      return `same-repo-only is enabled and head repository '${pullRequest.headRepositoryFullName}' does not match base repository '${pullRequest.baseRepositoryFullName}'.`;
+    }
+  }
+
+  const normalizedAllowlist = new Set(
+    authorAllowlist.map((entry) => entry.toLowerCase())
+  );
+  const authorLogin = pullRequest.authorLogin?.toLowerCase();
+  const isAllowlisted = authorLogin
+    ? normalizedAllowlist.has(authorLogin)
+    : false;
+
+  if (normalizedAllowlist.size > 0 && !isAllowlisted && !minAuthorAssociation) {
+    return `author '${pullRequest.authorLogin ?? 'unknown'}' is not present in configured trust-author-allowlist.`;
+  }
+
+  const normalizedMinimumAssociation = normalizeAssociation(
+    minAuthorAssociation ?? null
+  );
+  if (normalizedMinimumAssociation && !isAllowlisted) {
+    const requiredLevel =
+      AUTHOR_ASSOCIATION_ORDER[normalizedMinimumAssociation];
+    if (typeof requiredLevel !== 'number') {
+      return `minimum author association '${normalizedMinimumAssociation}' is not supported.`;
+    }
+
+    const actualAssociation = normalizeAssociation(
+      pullRequest.authorAssociation
+    );
+    if (!actualAssociation) {
+      return `minimum author association '${normalizedMinimumAssociation}' is required, but pull request author association is unavailable.`;
+    }
+
+    const actualLevel = AUTHOR_ASSOCIATION_ORDER[actualAssociation];
+    if (typeof actualLevel !== 'number' || actualLevel < requiredLevel) {
+      return `author association '${actualAssociation}' is below required minimum '${normalizedMinimumAssociation}'.`;
+    }
+  }
+
+  if (requireApprovedReview) {
+    const reviewDecision = normalizeReviewDecision(pullRequest.reviewDecision);
+    if (reviewDecision !== 'APPROVED') {
+      return `approved review is required, but current review decision is '${reviewDecision ?? 'UNKNOWN'}'.`;
+    }
+  }
+
+  return null;
+};
+
 const evaluateRequiredChecks = (params: {
   requiredContexts: string[];
   statusContexts: Record<string, 'success' | 'failure' | 'pending'>;
@@ -403,6 +520,10 @@ export const runMergeTrain = async ({
   rerunFailedChecks = true,
   waitTimeoutSeconds = DEFAULT_WAIT_TIMEOUT_SECONDS,
   pollIntervalSeconds = DEFAULT_POLL_INTERVAL_SECONDS,
+  trustSameRepoOnly = true,
+  trustMinAuthorAssociation,
+  trustAuthorAllowlist = [],
+  trustRequireApprovedReview = false,
   sleep = defaultSleep
 }: MergeTrainParams): Promise<MergeTrainResult> => {
   const webhookPayload = payload as {
@@ -506,6 +627,29 @@ export const runMergeTrain = async ({
     lastCommentContext = context;
     logs.push(`Transition: updated PR status comment (${phase}).`);
   };
+
+  const trustPolicyFailureReason = evaluateTrustPolicy({
+    pullRequest,
+    sameRepoOnly: trustSameRepoOnly,
+    minAuthorAssociation: trustMinAuthorAssociation,
+    authorAllowlist: trustAuthorAllowlist,
+    requireApprovedReview: trustRequireApprovedReview
+  });
+  if (trustPolicyFailureReason) {
+    const blockedMessage = `Blocked: trust policy gate failed (${trustPolicyFailureReason}).`;
+    await upsertStatusComment(
+      'blocked',
+      `Trust policy gate failed: ${trustPolicyFailureReason}`
+    );
+    logs.push(`Transition: ${blockedMessage}`);
+    return {
+      eligible: true,
+      status: 'blocked',
+      labelName,
+      message: blockedMessage,
+      logs
+    };
+  }
 
   await upsertStatusComment(
     'waiting-checks',

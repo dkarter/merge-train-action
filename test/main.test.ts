@@ -65,6 +65,10 @@ const buildRunMergeTrainArgs = (overrides: Record<string, unknown> = {}) => ({
   pollIntervalSeconds: 15,
   payload: eventPayload,
   rerunFailedChecks: true,
+  trustAuthorAllowlist: [],
+  trustMinAuthorAssociation: '',
+  trustRequireApprovedReview: false,
+  trustSameRepoOnly: true,
   waitTimeoutSeconds: 600,
   ...overrides
 });
@@ -76,7 +80,17 @@ const expectDefaultInputCalls = (): void => {
   expect(mocked.getInput).toHaveBeenNthCalledWith(4, 'rerun-failed-checks');
   expect(mocked.getInput).toHaveBeenNthCalledWith(5, 'wait-timeout-seconds');
   expect(mocked.getInput).toHaveBeenNthCalledWith(6, 'poll-interval-seconds');
-  expect(mocked.getInput).toHaveBeenNthCalledWith(7, 'token');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(7, 'trust-same-repo-only');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(
+    8,
+    'trust-min-author-association'
+  );
+  expect(mocked.getInput).toHaveBeenNthCalledWith(9, 'trust-author-allowlist');
+  expect(mocked.getInput).toHaveBeenNthCalledWith(
+    10,
+    'trust-require-approved-review'
+  );
+  expect(mocked.getInput).toHaveBeenNthCalledWith(11, 'token');
 };
 
 describe('run', () => {
@@ -226,5 +240,32 @@ describe('run', () => {
     );
     expectDefaultInputCalls();
     expect(mocked.info).toHaveBeenCalledWith('Rerun toggle is disabled.');
+  });
+
+  it('passes trust policy inputs through to merge train', async () => {
+    mockInputs({
+      'trust-same-repo-only': 'false',
+      'trust-min-author-association': 'member',
+      'trust-author-allowlist': 'octocat,hubot',
+      'trust-require-approved-review': 'yes'
+    });
+    mocked.runMergeTrain.mockResolvedValue({
+      eligible: true,
+      status: 'noop',
+      labelName: 'ready-to-merge',
+      message: "No-op: pull request #9 is 'closed', not open.",
+      logs: []
+    });
+
+    await run();
+
+    expect(mocked.runMergeTrain).toHaveBeenCalledWith(
+      buildRunMergeTrainArgs({
+        trustSameRepoOnly: false,
+        trustMinAuthorAssociation: 'member',
+        trustAuthorAllowlist: ['octocat', 'hubot'],
+        trustRequireApprovedReview: true
+      })
+    );
   });
 });

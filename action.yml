@@ -29,6 +29,22 @@ inputs:
     description: Optional operator-provided reason emitted in logs when pause is enabled.
     required: false
     default: ''
+  trust-same-repo-only:
+    description: Require pull requests to originate from the same repository before merge-train execution.
+    required: false
+    default: 'true'
+  trust-min-author-association:
+    description: Optional minimum pull request author association (NONE, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, CONTRIBUTOR, COLLABORATOR, MEMBER, OWNER).
+    required: false
+    default: ''
+  trust-author-allowlist:
+    description: Optional comma-separated list of trusted PR author logins; allowlisted authors bypass minimum author association checks.
+    required: false
+    default: ''
+  trust-require-approved-review:
+    description: Require GitHub review decision to be APPROVED before merge-train execution.
+    required: false
+    default: 'false'
 outputs:
   label-name:
     description: Label value used by the action run.

@@ -269,4 +269,37 @@ describe('createGitHubClient.upsertMergeTrainStatusComment', () => {
     expect(createComment).not.toHaveBeenCalled();
     expect(commentId).toBe(77);
   });
+
+  it('does not create duplicate comments when direct update returns 404', async () => {
+    const listComments = vi.fn();
+    const createComment = vi.fn();
+    const updateComment = vi.fn().mockRejectedValue({
+      status: 404,
+      message: 'Not Found'
+    });
+
+    vi.mocked(github.getOctokit).mockReturnValue({
+      rest: {
+        issues: {
+          listComments,
+          createComment,
+          updateComment
+        }
+      }
+    } as never);
+
+    const client = createGitHubClient('token');
+    const commentId = await client.upsertMergeTrainStatusComment({
+      owner: 'acme',
+      repo: 'merge-train-action',
+      pullNumber: 9,
+      body: 'new status body',
+      commentId: 77
+    });
+
+    expect(updateComment).toHaveBeenCalledTimes(3);
+    expect(listComments).not.toHaveBeenCalled();
+    expect(createComment).not.toHaveBeenCalled();
+    expect(commentId).toBe(77);
+  });
 });

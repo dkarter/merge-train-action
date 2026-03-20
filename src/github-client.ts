@@ -64,6 +64,10 @@ const withStatusCommentMarker = (body: string): string => {
   return `${body}\n\n${STATUS_COMMENT_MARKER}`;
 };
 
+const sleep = async (milliseconds: number): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+};
+
 export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
   const octokit = github.getOctokit(token);
 
@@ -351,21 +355,30 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       const normalizedBody = withStatusCommentMarker(body);
 
       if (typeof commentId === 'number' && Number.isInteger(commentId)) {
-        try {
-          await octokit.rest.issues.updateComment({
-            owner,
-            repo,
-            comment_id: commentId,
-            body: normalizedBody
-          });
-          return commentId;
-        } catch (error) {
-          if (
-            typeof error === 'object' &&
-            error !== null &&
-            'status' in error &&
-            error.status !== 404
-          ) {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            await octokit.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: commentId,
+              body: normalizedBody
+            });
+            return commentId;
+          } catch (error) {
+            if (
+              typeof error === 'object' &&
+              error !== null &&
+              'status' in error &&
+              error.status === 404
+            ) {
+              if (attempt < 2) {
+                await sleep(250);
+                continue;
+              }
+
+              return commentId;
+            }
+
             throw error;
           }
         }

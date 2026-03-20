@@ -49,6 +49,19 @@ This repository uses `release-please` with conventional commits.
 
 When opening PRs, use conventional commit subjects so release-please can determine semantic version bumps correctly (for example `feat: ...`, `fix: ...`, `chore: ...`).
 
+Release operators should follow `docs/release-runbook.md` for the full cut-and-verify process.
+
+Quick verification commands after a release PR merges:
+
+```bash
+gh run list --workflow "Release Please" --branch main --limit 5
+gh release view --json tagName,name,publishedAt,url
+git fetch --tags
+git rev-parse v1
+```
+
+Node runtime caveat: contributors use Bun-first commands for development (`bun run ...`), while published action execution remains on Node 20 via `action.yml`.
+
 ## Pull Request and Reviewer Expectations
 
 - Use the PR template checklist and complete the author items before requesting review.

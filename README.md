@@ -14,6 +14,13 @@ This repository is bootstrapped with a production-ready TypeScript-based JavaScr
 
 ## Usage
 
+### Install and wire the workflow
+
+1. Copy this workflow to `.github/workflows/merge-train.yml` in your repository.
+2. Replace `your-org/merge-train-action@v1` with your published action reference.
+3. Keep branch protection enabled for the base branch so required checks gate merge.
+4. Apply the merge-train label (`ready-to-merge` by default) to eligible pull requests.
+
 ### Default label (`ready-to-merge`)
 
 ```yaml
@@ -117,6 +124,57 @@ Deterministic behavior:
 
 Output `status` values: `merged`, `blocked`, `noop`.
 
+## Troubleshooting
+
+### `status=blocked` with failing checks
+
+Symptoms:
+
+- Logs show `required checks still failing`.
+- Action output is `status: blocked`.
+
+What to do:
+
+1. Open the PR checks tab and fix the failing required checks.
+2. Re-run CI if needed (the action requests only one rerun for failed required check-runs when enabled).
+3. Push a fix commit or retrigger with a `synchronize` event.
+
+### Action does nothing (`status=noop`)
+
+Symptoms:
+
+- Logs indicate pull request is closed, already merged, not mergeable, paused, or missing label.
+
+What to do:
+
+1. Confirm the PR has the configured label (default `ready-to-merge`).
+2. Confirm workflow is triggered on `pull_request` events including `labeled` and `synchronize`.
+3. If `pause: 'true'` is configured, set `pause: 'false'` (or remove pause inputs).
+
+### Branch update does not happen
+
+Symptoms:
+
+- PR stays behind base branch.
+- Logs show permission or update-branch failure.
+
+What to do:
+
+1. Verify workflow job permissions include `pull-requests: write` and `contents: write`.
+2. Ensure branch protection allows GitHub's update-branch operation.
+3. Re-run after permissions are corrected.
+
+### Permission errors when rerunning failed checks
+
+Symptoms:
+
+- Logs show the action cannot request check-rerun.
+
+What to do:
+
+1. Keep `rerun-failed-checks: 'false'` if you do not want rerun behavior.
+2. Otherwise grant `checks: write` to the job permissions.
+
 ## Operational Playbook
 
 - Planned maintenance window: set `pause: 'true'` and provide `pause-reason` in workflow configuration.
@@ -173,6 +231,12 @@ Security gate details:
 
 ## Local Development
 
+This repository is Bun-first for local development and CI commands.
+
+- Use `bun run ...` for all documented local tasks.
+- Use `task ci:*` aliases only as optional wrappers around Bun commands.
+- Node 20 is still required because GitHub Actions executes published JavaScript actions on the Node runtime defined in `action.yml` (`runs.using: node20`).
+
 Install toolchain and dependencies:
 
 ```bash
@@ -227,3 +291,7 @@ Tagging strategy:
 - Immutable semver tags (`vX.Y.Z`) are the source of truth for each release.
 - Stable major tag `v1` is automatically force-updated to the latest `v1.x.x` release commit.
 - Consumers should use `@v1` for stable updates and pin full tags for strict reproducibility.
+
+Release operator runbook:
+
+- See `docs/release-runbook.md` for step-by-step release creation, validation, and stable tag verification.

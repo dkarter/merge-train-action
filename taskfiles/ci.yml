@@ -14,7 +14,7 @@ tasks:
   test:
     desc: Run unit tests
     cmds:
-      - bun test
+      - bun run test
 
   package:
     desc: Build action distribution bundle

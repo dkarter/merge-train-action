@@ -1,5 +1,6 @@
 [tools]
 node = "24"
+bun = "latest"
 lefthook = "2.1.4"
 gitleaks = "8.30.0"
 

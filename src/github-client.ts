@@ -56,14 +56,6 @@ const parseWorkflowRunIdFromDetailsUrl = (
   return runId;
 };
 
-const isBotUser = (login: string | null | undefined, type: string): boolean => {
-  if (type === 'Bot') {
-    return true;
-  }
-
-  return typeof login === 'string' && login.endsWith('[bot]');
-};
-
 const withStatusCommentMarker = (body: string): string => {
   if (body.includes(STATUS_COMMENT_MARKER)) {
     return body;
@@ -367,8 +359,7 @@ export const createGitHubClient = (token: string): MergeTrainGitHubClient => {
       for (const comment of response.data) {
         if (
           typeof comment.body !== 'string' ||
-          !comment.body.includes(STATUS_COMMENT_MARKER) ||
-          !isBotUser(comment.user?.login ?? null, comment.user?.type ?? '')
+          !comment.body.includes(STATUS_COMMENT_MARKER)
         ) {
           continue;
         }
